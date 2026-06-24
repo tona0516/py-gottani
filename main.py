@@ -2,17 +2,18 @@
 X（旧Twitter）のブックマークから画像を一括ダウンロードするスクリプト
 
 【必要なライブラリのインストール】
-    pip install playwright requests
-    playwright install chromium
+    uv sync
+    uv run playwright install chromium
 
 【使い方】
-    1. このスクリプトを実行すると、最初にブラウザウィンドウが開きます。
-    2. 初回のみ、表示されたブラウザでXに手動でログインしてください。
+    1. uv run main.py
+    2. このスクリプトを実行すると、最初にブラウザウィンドウが開きます。
+    3. 初回のみ、表示されたブラウザでXに手動でログインしてください。
        ログイン後ターミナルに戻り Enter キーを押すと、ログイン情報が
        auth.json に保存されます（次回以降は自動でログインされます）。
-    3. 自動でブックマークページに移動し、下にスクロールしながら
+    4. 自動でブックマークページに移動し、下にスクロールしながら
        画像を検出し、URLを収集します。
-    4. 収集が終わると images/ フォルダに画像が保存されます。
+    5. 収集が終わると images/ フォルダに画像が保存されます。
 
 【注意点】
     - 自分のアカウントの私的なバックアップ目的での利用を想定しています。
@@ -49,14 +50,20 @@ def to_original_quality(url: str) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def filename_from_url(url: str) -> str:
-    """画像URLから保存用のファイル名を作る"""
+def filename_from_url(url: str, username: str) -> str:
+    """画像URLから保存用のファイル名を作る（アカウント名をプレフィックスにする）"""
     parsed = urlparse(url)
     base = os.path.basename(parsed.path)  # 例: AbCdEfGh.jpg
     name, ext = os.path.splitext(base)
     if not ext:
         ext = ".jpg"
-    return f"{name}{ext}"
+    
+    # 念のためファイル名として使えない文字を除外
+    safe_username = "".join(c for c in username if c.isalnum() or c in ("_", "-"))
+    if not safe_username:
+        safe_username = "unknown"
+
+    return f"{safe_username}_{name}{ext}"
 
 
 async def get_logged_in_context(playwright):
@@ -79,7 +86,7 @@ async def get_logged_in_context(playwright):
 
 
 async def collect_image_urls(page) -> set:
-    """ブックマークページをスクロールしながら画像URLを収集する"""
+    """ブックマークページをスクロールしながら画像URLとアカウント名を収集する"""
     collected = set()
     no_new_count = 0
 
@@ -87,15 +94,34 @@ async def collect_image_urls(page) -> set:
     await page.wait_for_timeout(3000)
 
     for i in range(MAX_SCROLLS):
-        # ツイート本文内の画像のみを対象にする（アイコン等は除外）
-        imgs = await page.eval_on_selector_all(
-            "article img[src*='pbs.twimg.com/media']",
-            "elements => elements.map(el => el.src)",
+        # ツイート本文内の画像とユーザー名（@アカウント名）を同時に取得する
+        items = await page.eval_on_selector_all(
+            "article",
+            """articles => {
+                let results = [];
+                articles.forEach(article => {
+                    let username = 'unknown';
+                    let spans = article.querySelectorAll('span');
+                    for (let span of spans) {
+                        let text = span.textContent.trim();
+                        if (text.startsWith('@') && text.length > 1) {
+                            username = text.substring(1);
+                            break;
+                        }
+                    }
+                    
+                    let imgs = article.querySelectorAll("img[src*='pbs.twimg.com/media']");
+                    imgs.forEach(img => {
+                        results.push({url: img.src, username: username});
+                    });
+                });
+                return results;
+            }"""
         )
 
         before_count = len(collected)
-        for src in imgs:
-            collected.add(to_original_quality(src))
+        for item in items:
+            collected.add((to_original_quality(item["url"]), item["username"]))
         after_count = len(collected)
 
         print(f"[{i + 1}/{MAX_SCROLLS}] 収集済み画像数: {after_count}")
@@ -111,18 +137,18 @@ async def collect_image_urls(page) -> set:
     return collected
 
 
-def download_images(urls: set, save_dir: str):
+def download_images(items: set, save_dir: str):
     """収集した画像URLをすべてダウンロードして保存する"""
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "Mozilla/5.0"}
-    urls = sorted(urls)
+    items_sorted = sorted(list(items), key=lambda x: x[0])  # URLでソート
 
-    for idx, url in enumerate(urls, start=1):
-        filename = filename_from_url(url)
+    for idx, (url, username) in enumerate(items_sorted, start=1):
+        filename = filename_from_url(url, username)
         filepath = os.path.join(save_dir, filename)
 
         if os.path.exists(filepath):
-            print(f"[{idx}/{len(urls)}] スキップ（既存）: {filename}")
+            print(f"[{idx}/{len(items_sorted)}] スキップ（既存）: {filename}")
             continue
 
         try:
@@ -130,9 +156,9 @@ def download_images(urls: set, save_dir: str):
             resp.raise_for_status()
             with open(filepath, "wb") as f:
                 f.write(resp.content)
-            print(f"[{idx}/{len(urls)}] 保存完了: {filename}")
+            print(f"[{idx}/{len(items_sorted)}] 保存完了: {filename}")
         except Exception as e:
-            print(f"[{idx}/{len(urls)}] 失敗: {url} ({e})")
+            print(f"[{idx}/{len(items_sorted)}] 失敗: {url} ({e})")
 
 
 async def main():
@@ -141,12 +167,12 @@ async def main():
         page = await context.new_page()
 
         try:
-            urls = await collect_image_urls(page)
+            items = await collect_image_urls(page)
         finally:
             await browser.close()
 
-        print(f"\n合計 {len(urls)} 件の画像URLを収集しました。ダウンロードを開始します。")
-        download_images(urls, SAVE_DIR)
+        print(f"\n合計 {len(items)} 件の画像を収集しました。ダウンロードを開始します。")
+        download_images(items, SAVE_DIR)
         print("\n完了しました！ images フォルダを確認してください。")
 
 
