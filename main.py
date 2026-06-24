@@ -36,7 +36,7 @@ from playwright.async_api import async_playwright
 AUTH_FILE = "auth.json"  # ログイン情報の保存先
 SAVE_DIR = "images"  # 画像の保存先フォルダ
 BOOKMARKS_URL = "https://x.com/i/bookmarks"
-MAX_SCROLLS = 200  # 最大スクロール回数
+MAX_SCROLLS = 1000  # 最大スクロール回数
 SCROLL_WAIT_MS = 1500  # スクロール後の待機時間（ミリ秒）
 NO_NEW_CONTENT_LIMIT = 6  # 新しい画像が見つからない状態がこの回数続いたら終了
 
