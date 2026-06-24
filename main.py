@@ -33,12 +33,12 @@ import requests
 from playwright.async_api import async_playwright
 
 # ===== 設定（必要に応じて変更してください） =====
-AUTH_FILE = "auth.json"            # ログイン情報の保存先
-SAVE_DIR = "images"                # 画像の保存先フォルダ
+AUTH_FILE = "auth.json"  # ログイン情報の保存先
+SAVE_DIR = "images"  # 画像の保存先フォルダ
 BOOKMARKS_URL = "https://x.com/i/bookmarks"
-MAX_SCROLLS = 200                  # 最大スクロール回数
-SCROLL_WAIT_MS = 1500              # スクロール後の待機時間（ミリ秒）
-NO_NEW_CONTENT_LIMIT = 6           # 新しい画像が見つからない状態がこの回数続いたら終了
+MAX_SCROLLS = 200  # 最大スクロール回数
+SCROLL_WAIT_MS = 1500  # スクロール後の待機時間（ミリ秒）
+NO_NEW_CONTENT_LIMIT = 6  # 新しい画像が見つからない状態がこの回数続いたら終了
 
 
 def to_original_quality(url: str) -> str:
@@ -57,7 +57,7 @@ def filename_from_url(url: str, username: str) -> str:
     name, ext = os.path.splitext(base)
     if not ext:
         ext = ".jpg"
-    
+
     # 念のためファイル名として使えない文字を除外
     safe_username = "".join(c for c in username if c.isalnum() or c in ("_", "-"))
     if not safe_username:
@@ -80,7 +80,9 @@ async def get_logged_in_context(playwright):
         print("\nブラウザが開きました。手動でXにログインしてください。")
         input("ログインが完了したら、ここでEnterキーを押してください...")
         await context.storage_state(path=AUTH_FILE)
-        print(f"ログイン情報を {AUTH_FILE} に保存しました。次回以降は自動ログインされます。")
+        print(
+            f"ログイン情報を {AUTH_FILE} に保存しました。次回以降は自動ログインされます。"
+        )
 
     return browser, context
 
@@ -116,7 +118,7 @@ async def collect_image_urls(page) -> set:
                     });
                 });
                 return results;
-            }"""
+            }""",
         )
 
         before_count = len(collected)
