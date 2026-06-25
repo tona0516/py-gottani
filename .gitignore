@@ -11,3 +11,6 @@ wheels/
 
 # Credential
 auth.json
+
+# Output
+images/
