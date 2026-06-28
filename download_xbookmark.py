@@ -4,10 +4,11 @@ X（旧Twitter）のブックマークから画像を一括ダウンロードす
 
 import argparse
 import asyncio
-from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import threading
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 
 import requests
 from playwright.async_api import async_playwright
@@ -21,31 +22,34 @@ MAX_SCROLLS = 1000  # 最大スクロール回数
 SCROLL_WAIT_MS = 1500  # スクロール後の待機時間（ミリ秒）
 NO_NEW_CONTENT_LIMIT = 6  # 新しい画像が見つからない状態がこの回数続いたら終了
 
-
-def format_datetime_jst(dt_str: str | None) -> str:
-    """ISO 8601 (UTC) 文字列を JST に変換し、YYYY-MM-DD-SS 形式で返す"""
-    if not dt_str:
-        # 取得できなかった場合は現在日時を使用
-        dt = datetime.now()
-        return dt.strftime("%Y-%m-%d-%S")
-
-    try:
-        # 例: "2026-06-27T10:50:32.000Z" -> "2026-06-27T10:50:32.000+00:00"
-        clean_str = dt_str.replace("Z", "+00:00")
-        dt_utc = datetime.fromisoformat(clean_str)
-        # JST (UTC+9) に変換
-        jst = timezone(timedelta(hours=9))
-        dt_jst = dt_utc.astimezone(jst)
-        return dt_jst.strftime("%Y-%m-%d-%S")
-    except Exception:
-        # 何らかの理由でパースに失敗した場合の簡易フォールバック
-        try:
-            # 簡易的に文字列から抽出
-            date_part = dt_str[:10]
-            sec_part = dt_str[17:19]
-            return f"{date_part}-{sec_part}"
-        except Exception:
-            return "unknown-date"
+# ブックマークページからツイート情報（ユーザー名と画像URLリスト）を抽出する JavaScript ロジック
+EXTRACT_TWEETS_JS = """articles => {
+    let results = [];
+    articles.forEach(article => {
+        let imgs = article.querySelectorAll("img[src*='pbs.twimg.com/media']");
+        let imageUrls = Array.from(imgs).map(img => img.src);
+        
+        if (imageUrls.length === 0) return;
+        
+        let username = 'unknown';
+        let userNameEl = article.querySelector('[data-testid="User-Name"]');
+        if (userNameEl) {
+            let spans = userNameEl.querySelectorAll('span');
+            for (let span of spans) {
+                let text = span.textContent.trim();
+                if (!text.startsWith('@') || text.length <= 1) continue;
+                username = text.substring(1);
+                break;
+            }
+        }
+        
+        results.push({
+            username: username,
+            urls: imageUrls
+        });
+    });
+    return results;
+}"""
 
 
 def to_original_quality(url: str) -> str:
@@ -58,13 +62,11 @@ def to_original_quality(url: str) -> str:
 
 
 def filename_from_url(
-    url: str, username: str, datetime_str: str | None
+    url: str, username: str
 ) -> str:
-    """画像情報から保存用のファイル名を作る (@アカウント名_YYYY-MM-DD-SS_メディアID.拡張子)"""
-    parsed = urlparse(url)
-    media_id = os.path.basename(parsed.path)
-
+    """画像情報から保存用のファイル名を作る (@アカウント名_URLエンコードされた画像URL.拡張子)"""
     # クエリパラメータから拡張子を取得
+    parsed = urlparse(url)
     query = parse_qs(parsed.query)
     fmt = query.get("format", ["jpg"])[0]
     ext = f".{fmt}"
@@ -74,10 +76,10 @@ def filename_from_url(
     if not safe_username:
         safe_username = "unknown"
 
-    # 日付フォーマットの生成
-    date_str = format_datetime_jst(datetime_str)
+    # URLエンコードされた画像URL
+    encoded_url = quote(url, safe="")
 
-    return f"@{safe_username}_{date_str}_{media_id}{ext}"
+    return f"@{safe_username}_{encoded_url}{ext}"
 
 
 async def get_logged_in_context(playwright):
@@ -103,63 +105,31 @@ async def get_logged_in_context(playwright):
 
 async def collect_image_urls(page) -> dict:
     """ブックマークページをスクロールしながら画像情報を収集する"""
-    collected = {}  # url -> {username, datetime, index}
+    collected = {}  # url -> {username}
     no_new_count = 0
 
     await page.goto(BOOKMARKS_URL)
     await page.wait_for_timeout(3000)
 
     for i in range(MAX_SCROLLS):
-        # ツイート本文内の画像、ユーザー名（@アカウント名）、投稿日時を取得する
+        # ツイート本文内の画像、ユーザー名（@アカウント名）を取得する
         items = await page.eval_on_selector_all(
             "article",
-            """articles => {
-                let results = [];
-                articles.forEach(article => {
-                    let username = 'unknown';
-                    let userNameEl = article.querySelector('[data-testid="User-Name"]');
-                    if (userNameEl) {
-                        let spans = userNameEl.querySelectorAll('span');
-                        for (let span of spans) {
-                            let text = span.textContent.trim();
-                            if (text.startsWith('@') && text.length > 1) {
-                                username = text.substring(1);
-                                break;
-                            }
-                        }
-                    }
-                    
-                    let timeEl = article.querySelector('time');
-                    let datetime = timeEl ? timeEl.getAttribute('datetime') : null;
-                    
-                    let imgs = article.querySelectorAll("img[src*='pbs.twimg.com/media']");
-                    let imageUrls = Array.from(imgs).map(img => img.src);
-                    
-                    if (imageUrls.length > 0) {
-                        results.push({
-                            username: username,
-                            datetime: datetime,
-                            urls: imageUrls
-                        });
-                    }
-                });
-                return results;
-            }""",
+            EXTRACT_TWEETS_JS,
         )
 
         before_count = len(collected)
         for item in items:
             username = item["username"]
-            datetime_str = item["datetime"]
             urls = item["urls"]
 
             for url in urls:
                 orig_url = to_original_quality(url)
-                if orig_url not in collected:
-                    collected[orig_url] = {
-                        "username": username,
-                        "datetime": datetime_str,
-                    }
+                if orig_url in collected:
+                    continue
+                collected[orig_url] = {
+                    "username": username,
+                }
         after_count = len(collected)
 
         print(f"[{i + 1}/{MAX_SCROLLS}] 収集済み画像数: {after_count}")
@@ -175,7 +145,7 @@ async def collect_image_urls(page) -> dict:
     return collected
 
 
-def download_images(items: dict, save_dir: str):
+def download_images(items: dict, save_dir: str, max_workers: int = 10):
     """収集した画像URLをすべてダウンロードして保存する"""
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -184,42 +154,53 @@ def download_images(items: dict, save_dir: str):
     # 保存先ディレクトリ内の既存のファイルリストを取得
     existing_files = os.listdir(save_dir)
 
-    for idx, (url, info) in enumerate(items_sorted, start=1):
+    completed_count = 0
+    counter_lock = threading.Lock()
+    total = len(items_sorted)
+
+    def _download_single(url, info):
+        nonlocal completed_count
         username = info["username"]
-        datetime_str = info["datetime"]
 
-        parsed = urlparse(url)
-        media_id = os.path.basename(parsed.path)
+        # 既に同じ画像URLを持つファイルが保存先に存在するかチェック
+        encoded_url = quote(url, safe="")
+        existing_filename = next((f for f in existing_files if encoded_url in f), None)
 
-        # 既に同じメディアIDを持つファイルが保存先に存在するかチェック
-        already_exists = False
-        existing_filename = None
-        for f in existing_files:
-            name_without_ext, _ = os.path.splitext(f)
-            if name_without_ext.endswith(f"_{media_id}"):
-                already_exists = True
-                existing_filename = f
-                break
+        if existing_filename:
+            with counter_lock:
+                completed_count += 1
+                idx = completed_count
+            print(f"[{idx}/{total}] スキップ（既存画像URL）: {existing_filename}")
+            return
 
-        if already_exists:
-            print(f"[{idx}/{len(items_sorted)}] スキップ（既存メディアID）: {existing_filename}")
-            continue
-
-        filename = filename_from_url(url, username, datetime_str)
+        filename = filename_from_url(url, username)
         filepath = os.path.join(save_dir, filename)
 
         if os.path.exists(filepath):
-            print(f"[{idx}/{len(items_sorted)}] スキップ（既存ファイル名）: {filename}")
-            continue
+            with counter_lock:
+                completed_count += 1
+                idx = completed_count
+            print(f"[{idx}/{total}] スキップ（既存ファイル名）: {filename}")
+            return
 
         try:
             resp = requests.get(url, headers=headers, timeout=30)
             resp.raise_for_status()
             with open(filepath, "wb") as f:
                 f.write(resp.content)
-            print(f"[{idx}/{len(items_sorted)}] 保存完了: {filename}")
+            with counter_lock:
+                completed_count += 1
+                idx = completed_count
+            print(f"[{idx}/{total}] 保存完了: {filename}")
         except Exception as e:
-            print(f"[{idx}/{len(items_sorted)}] 失敗: {url} ({e})")
+            with counter_lock:
+                completed_count += 1
+                idx = completed_count
+            print(f"[{idx}/{total}] 失敗: {url} ({e})")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for url, info in items_sorted:
+            executor.submit(_download_single, url, info)
 
 
 async def main():
@@ -228,6 +209,9 @@ async def main():
     )
     parser.add_argument(
         "--dir", default=SAVE_DIR, help=f"画像の保存先フォルダ (デフォルト: {SAVE_DIR})"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=10, help="並列ダウンロードの接続数 (デフォルト: 10)"
     )
     args = parser.parse_args()
 
@@ -241,7 +225,7 @@ async def main():
             await browser.close()
 
         print(f"\n合計 {len(items)} 件の画像を収集しました。ダウンロードを開始します。")
-        download_images(items, args.dir)
+        download_images(items, args.dir, args.workers)
         print(f"\n完了しました！ {args.dir} フォルダを確認してください。")
 
 
