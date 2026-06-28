@@ -156,7 +156,10 @@ def verify_duplicates_detailed(path1, path2, hist_threshold=0.80, diff_threshold
 
         return True
     except Exception as e:
-        print(f"詳細比較中にエラーが発生しました ({path1} vs {path2}): {e}", file=sys.stderr)
+        print(
+            f"詳細比較中にエラーが発生しました ({path1} vs {path2}): {e}",
+            file=sys.stderr,
+        )
         return False
 
 
@@ -285,7 +288,7 @@ def handle_duplicates(duplicate_groups, action, output_dir):
     """
     重複画像を移動または削除する。
     """
-    dry_run = action == "dry-run"
+    dryrun = action == "dryrun"
     total_duplicates = sum(len(group) - 1 for group in duplicate_groups)
 
     if total_duplicates == 0:
@@ -298,10 +301,10 @@ def handle_duplicates(duplicate_groups, action, output_dir):
     )
     print("=" * 50 + "\n")
 
-    if dry_run:
+    if dryrun:
         print("=== DRY RUN MODE: ファイル操作は行われません ===")
 
-    if action == "move" and not dry_run:
+    if action == "move" and not dryrun:
         os.makedirs(output_dir, exist_ok=True)
 
     moved_or_deleted_count = 0
@@ -341,7 +344,7 @@ def handle_duplicates(duplicate_groups, action, output_dir):
 
             saved_space += rep.size
 
-            if not dry_run:
+            if not dryrun:
                 if action == "delete":
                     try:
                         os.remove(rep.path)
@@ -376,7 +379,7 @@ def handle_duplicates(duplicate_groups, action, output_dir):
         print()
 
     print("-" * 50)
-    if dry_run:
+    if dryrun:
         print(
             f"ドライランが完了しました。実際に実行すると、{total_duplicates} 個のファイルが処理され、{saved_space / 1024 / 1024:.2f} MB の容量が削減されます。"
         )
@@ -417,9 +420,9 @@ def main():
     parser.add_argument(
         "-a",
         "--action",
-        choices=["dry-run", "move", "delete"],
-        default="dry-run",
-        help="重複画像に対する処理。実際にファイルを移動または削除する場合は 'move' または 'delete' を指定します (デフォルト: dry-run)",
+        choices=["dryrun", "move", "delete"],
+        default="dryrun",
+        help="重複画像に対する処理。実際にファイルを移動または削除する場合は 'move' または 'delete' を指定します (デフォルト: dryrun)",
     )
     parser.add_argument(
         "--no-strict",
