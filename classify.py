@@ -106,6 +106,8 @@ def classify_images(
         try:
             # 画像の読み込みとRGB変換
             with Image.open(path) as img:
+                if img.mode == "P" and "transparency" in img.info:
+                    img = img.convert("RGBA")
                 img_rgb = img.convert("RGB")
 
                 # 画像の前処理

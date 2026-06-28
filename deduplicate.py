@@ -48,6 +48,8 @@ def calculate_dhash(img, hash_size=8):
     """
     try:
         # dHashは各行の隣接ピクセルを比較するため、横方向に1ピクセル多く縮小する
+        if img.mode == "P" and "transparency" in img.info:
+            img = img.convert("RGBA")
         img_resized = img.convert("L").resize(
             (hash_size + 1, hash_size), Image.Resampling.BILINEAR
         )
@@ -82,6 +84,10 @@ def compare_color_histograms(img1, img2):
     値は 0.0（全く異なる）から 1.0（完全に一致）の間になる。
     """
     try:
+        if img1.mode == "P" and "transparency" in img1.info:
+            img1 = img1.convert("RGBA")
+        if img2.mode == "P" and "transparency" in img2.info:
+            img2 = img2.convert("RGBA")
         img1 = img1.convert("RGB")
         img2 = img2.convert("RGB")
 
@@ -110,6 +116,10 @@ def compare_pixel_difference(img1, img2, size=128):
     値は 0.0 から 255.0 の間になり、0.0 に近いほどピクセルレベルで同一。
     """
     try:
+        if img1.mode == "P" and "transparency" in img1.info:
+            img1 = img1.convert("RGBA")
+        if img2.mode == "P" and "transparency" in img2.info:
+            img2 = img2.convert("RGBA")
         img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
         img2_gray = img2.convert("L").resize((size, size), Image.Resampling.BILINEAR)
 
