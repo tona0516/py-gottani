@@ -60,12 +60,14 @@ def to_original_quality(url: str) -> str:
 def filename_from_url(
     url: str, username: str, datetime_str: str | None, index: int
 ) -> str:
-    """画像情報から保存用のファイル名を作る (@アカウント名_YYYY-MM-DD-SS_インデックス.拡張子)"""
+    """画像情報から保存用のファイル名を作る (@アカウント名_YYYY-MM-DD-SS_メディアID_インデックス.拡張子)"""
     parsed = urlparse(url)
-    base = os.path.basename(parsed.path)  # 例: AbCdEfGh.jpg
-    _, ext = os.path.splitext(base)
-    if not ext:
-        ext = ".jpg"
+    media_id = os.path.basename(parsed.path)
+
+    # クエリパラメータから拡張子を取得
+    query = parse_qs(parsed.query)
+    fmt = query.get("format", ["jpg"])[0]
+    ext = f".{fmt}"
 
     # 念のためファイル名として使えない文字を除外
     safe_username = "".join(c for c in username if c.isalnum() or c in ("_", "-"))
@@ -75,7 +77,7 @@ def filename_from_url(
     # 日付フォーマットの生成
     date_str = format_datetime_jst(datetime_str)
 
-    return f"@{safe_username}_{date_str}_{index}{ext}"
+    return f"@{safe_username}_{date_str}_{media_id}_{index}{ext}"
 
 
 async def get_logged_in_context(playwright):
@@ -115,12 +117,15 @@ async def collect_image_urls(page) -> dict:
                 let results = [];
                 articles.forEach(article => {
                     let username = 'unknown';
-                    let spans = article.querySelectorAll('span');
-                    for (let span of spans) {
-                        let text = span.textContent.trim();
-                        if (text.startsWith('@') && text.length > 1) {
-                            username = text.substring(1);
-                            break;
+                    let userNameEl = article.querySelector('[data-testid="User-Name"]');
+                    if (userNameEl) {
+                        let spans = userNameEl.querySelectorAll('span');
+                        for (let span of spans) {
+                            let text = span.textContent.trim();
+                            if (text.startsWith('@') && text.length > 1) {
+                                username = text.substring(1);
+                                break;
+                            }
                         }
                     }
                     
@@ -177,16 +182,35 @@ def download_images(items: dict, save_dir: str):
     headers = {"User-Agent": "Mozilla/5.0"}
     items_sorted = sorted(items.items(), key=lambda x: x[0])  # URLでソート
 
+    # 保存先ディレクトリ内の既存のファイルリストを取得
+    existing_files = os.listdir(save_dir)
+
     for idx, (url, info) in enumerate(items_sorted, start=1):
         username = info["username"]
         datetime_str = info["datetime"]
         img_index = info["index"]
 
+        parsed = urlparse(url)
+        media_id = os.path.basename(parsed.path)
+
+        # 既に同じメディアIDを持つファイルが保存先に存在するかチェック
+        already_exists = False
+        existing_filename = None
+        for f in existing_files:
+            if f"_{media_id}_" in f:
+                already_exists = True
+                existing_filename = f
+                break
+
+        if already_exists:
+            print(f"[{idx}/{len(items_sorted)}] スキップ（既存メディアID）: {existing_filename}")
+            continue
+
         filename = filename_from_url(url, username, datetime_str, img_index)
         filepath = os.path.join(save_dir, filename)
 
         if os.path.exists(filepath):
-            print(f"[{idx}/{len(items_sorted)}] スキップ（既存）: {filename}")
+            print(f"[{idx}/{len(items_sorted)}] スキップ（既存ファイル名）: {filename}")
             continue
 
         try:
