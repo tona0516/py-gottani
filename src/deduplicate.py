@@ -141,10 +141,49 @@ def compare_pixel_difference(img1, img2, size=128):
         return 255.0
 
 
-def verify_duplicates_detailed(path1, path2, hist_threshold=0.80, diff_threshold=10.0):
+def analyze_pixel_differences(img1, img2, size=128, diff_threshold=15):
+    """
+    2つの画像を中解像度のグレースケールに縮小し、ピクセル間の差分を分析する。
+    (MAE, 閾値を超える差分ピクセル数, 差分ピクセルの割合) を返す。
+    """
+    try:
+        img1 = convert_palette_to_rgba_if_needed(img1)
+        img2 = convert_palette_to_rgba_if_needed(img2)
+        img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
+        img2_gray = img2.convert("L").resize((size, size), Image.Resampling.BILINEAR)
+
+        bytes1 = img1_gray.tobytes()
+        bytes2 = img2_gray.tobytes()
+
+        total_diff = 0
+        significant_diff_count = 0
+        total_pixels = size * size
+
+        for b1, b2 in zip(bytes1, bytes2):
+            diff = abs(b1 - b2)
+            total_diff += diff
+            if diff >= diff_threshold:
+                significant_diff_count += 1
+
+        mae = total_diff / total_pixels
+        diff_ratio = significant_diff_count / total_pixels
+        return mae, significant_diff_count, diff_ratio
+    except Exception as e:
+        print(f"ピクセル差分分析中にエラーが発生しました: {e}", file=sys.stderr)
+        return 255.0, size * size, 1.0
+
+
+def verify_duplicates_detailed(
+    path1,
+    path2,
+    hist_threshold=0.80,
+    diff_threshold=10.0,
+    pixel_diff_threshold=15,
+    pixel_diff_ratio=0.005,
+):
     """
     2つの画像について、カラーヒストグラムと中解像度ピクセル差分の詳細検証を行う。
-    両方のテストをパス（色が似ており、ピクセル差分が小さい）した場合にのみ True を返す。
+    すべての検証をパスした場合にのみ True を返す。
     """
     try:
         with Image.open(path1) as img1, Image.open(path2) as img2:
@@ -153,9 +192,15 @@ def verify_duplicates_detailed(path1, path2, hist_threshold=0.80, diff_threshold
             if hist_corr < hist_threshold:
                 return False
 
-            # 2. 中解像度ピクセル差分の比較
-            mae = compare_pixel_difference(img1, img2)
+            # 2. 中解像度ピクセル差分の比較と差分割合の検証
+            mae, diff_count, diff_ratio = analyze_pixel_differences(
+                img1, img2, diff_threshold=pixel_diff_threshold
+            )
             if mae > diff_threshold:
+                return False
+
+            # 顕著な差分があるピクセル割合がしきい値以上の場合は別画像
+            if diff_ratio > pixel_diff_ratio:
                 return False
 
         return True
@@ -165,6 +210,7 @@ def verify_duplicates_detailed(path1, path2, hist_threshold=0.80, diff_threshold
             file=sys.stderr,
         )
         return False
+
 
 
 def read_image_details(path, hash_size):
@@ -262,11 +308,16 @@ def should_union(info1, info2, threshold, args=None):
 
     # 厳密検証の実行
     if args:
+        pixel_diff_threshold = getattr(args, "pixel_diff_threshold", 15)
+        pixel_diff_ratio = getattr(args, "pixel_diff_ratio", 0.5) / 100.0
+
         if not verify_duplicates_detailed(
             info1.path,
             info2.path,
             hist_threshold=args.hist_threshold,
             diff_threshold=args.diff_threshold,
+            pixel_diff_threshold=pixel_diff_threshold,
+            pixel_diff_ratio=pixel_diff_ratio,
         ):
             return False
 
@@ -328,19 +379,22 @@ def get_display_path(path):
     return rel_path
 
 
-def get_redundant_info(original_path, rep_path):
+def get_redundant_info(original_path, rep_path, pixel_diff_threshold=15):
     """
-    カラーヒストグラム交差とMAEを計算する。
+    カラーヒストグラム交差とMAE、差分ピクセル割合を計算する。
     """
     hist_corr = 0.0
     mae = 0.0
+    diff_ratio = 0.0
     try:
         with Image.open(original_path) as img1, Image.open(rep_path) as img2:
             hist_corr = compare_color_histograms(img1, img2)
-            mae = compare_pixel_difference(img1, img2)
+            mae, _, diff_ratio = analyze_pixel_differences(
+                img1, img2, diff_threshold=pixel_diff_threshold
+            )
     except Exception:
         pass
-    return hist_corr, mae
+    return hist_corr, mae, diff_ratio
 
 
 def resolve_dest_path(output_dir, filename):
@@ -387,7 +441,7 @@ def execute_file_action(rep, action, output_dir):
     return False
 
 
-def handle_duplicates(duplicate_groups, action, output_dir):
+def handle_duplicates(duplicate_groups, action, output_dir, args=None):
     """
     重複画像を移動または削除する。
     """
@@ -413,6 +467,8 @@ def handle_duplicates(duplicate_groups, action, output_dir):
     moved_or_deleted_count = 0
     saved_space = 0
 
+    pixel_diff_threshold = getattr(args, "pixel_diff_threshold", 15) if args else 15
+
     for i, group in enumerate(duplicate_groups, 1):
         original, redundants = select_best_image(group)
         orig_rel_path = get_display_path(original.path)
@@ -424,12 +480,14 @@ def handle_duplicates(duplicate_groups, action, output_dir):
 
         for rep in redundants:
             rep_rel_path = get_display_path(rep.path)
-            hist_corr, mae = get_redundant_info(original.path, rep.path)
+            hist_corr, mae, diff_ratio = get_redundant_info(
+                original.path, rep.path, pixel_diff_threshold=pixel_diff_threshold
+            )
 
             print(
                 f"  [重複] {rep_rel_path} ({rep.width}x{rep.height}, {rep.size / 1024:.1f} KB) - "
                 f"ハミング距離: {hamming_distance(original.dhash, rep.dhash)}, "
-                f"ヒストグラム交差: {hist_corr:.4f}, MAE: {mae:.2f}"
+                f"ヒストグラム交差: {hist_corr:.4f}, MAE: {mae:.2f}, 差分ピクセル割合: {diff_ratio * 100:.2f}%"
             )
 
             saved_space += rep.size
@@ -499,6 +557,20 @@ def main():
         default=10,
         help="中解像度ピクセル差分(MAE)のしきい値。これを超える平均輝度差のものは別画像とみなします (デフォルト: 10.0, 範囲: 0.0-255.0)",
     )
+    parser.add_argument(
+        "-pdt",
+        "--pixel-diff-threshold",
+        type=int,
+        default=15,
+        help="差分としてカウントするピクセルごとの輝度差のしきい値。小さいほど微細な差分を検出しやすくなります (デフォルト: 15, 範囲: 0-255)",
+    )
+    parser.add_argument(
+        "-pdr",
+        "--pixel-diff-ratio",
+        type=float,
+        default=0.5,
+        help="差分イラストと判断するための差分ピクセル割合(%%)のしきい値。これ以上の割合で差分ピクセルが存在すれば別画像と見なします (デフォルト: 0.5, 範囲: 0.0-100.0)",
+    )
 
     args = parser.parse_args()
 
@@ -519,7 +591,7 @@ def main():
         sys.exit(0)
 
     duplicate_groups = find_duplicate_groups(image_infos, args.threshold, args)
-    handle_duplicates(duplicate_groups, args.action, output_dir)
+    handle_duplicates(duplicate_groups, args.action, output_dir, args)
 
 
 if __name__ == "__main__":
