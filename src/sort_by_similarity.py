@@ -334,6 +334,15 @@ def main() -> None:
 
     # コピーと採番
     print(f"Copying files to {output_dir}...")
+
+    # 基準画像を0000としてコピー
+    target_ext = input_path.suffix
+    target_dest = output_dir / f"0000{target_ext}"
+    try:
+        shutil.copy2(input_path, target_dest)
+    except Exception as e:
+        print(f"Error copying target image {input_path.name} to 0000{target_ext}: {e}", file=sys.stderr)
+
     for idx, (path, val) in enumerate(sorted_results):
         ext = path.suffix
         new_name = f"{idx + 1:04d}{ext}"
@@ -343,7 +352,7 @@ def main() -> None:
         except Exception as e:
             print(f"Error copying {path.name} to {new_name}: {e}", file=sys.stderr)
 
-    print(f"Done. Successfully sorted and copied {len(sorted_results)} images to {output_dir}")
+    print(f"Done. Successfully sorted and copied {len(sorted_results) + 1} images (including target as 0000) to {output_dir}")
 
 
 if __name__ == "__main__":
