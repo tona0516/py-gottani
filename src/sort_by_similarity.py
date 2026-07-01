@@ -7,11 +7,91 @@ import os
 import sys
 import argparse
 import shutil
+import urllib.request
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from PIL import Image
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def download_yolo_model(dest_path: Path) -> Path:
+    """
+    アニメ顔検出用のYOLOv8モデルをHugging Faceからダウンロードする。
+    """
+    url = "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt"
+
+    if dest_path.exists():
+        return dest_path
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading YOLO model from {url}...")
+    try:
+        urllib.request.urlretrieve(url, dest_path)
+        print(f"Model downloaded successfully and saved to {dest_path}")
+    except Exception as e:
+        print(f"Error downloading model: {e}", file=sys.stderr)
+        raise e
+    return dest_path
+
+
+def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image:
+    """
+    YOLOv8を用いて画像からキャラクター（顔など）を検出し、
+    最大のバウンディングボックスをクロップした画像を返す。
+    検出されなかった場合は元の画像を返す。
+    """
+    try:
+        from ultralytics import YOLO
+    except ImportError:
+        print("Error: ultralytics is not installed.", file=sys.stderr)
+        return Image.open(image_path).convert("RGB")
+
+    try:
+        model = YOLO(str(model_path))
+        results = model(str(image_path), verbose=False)
+
+        img = Image.open(image_path).convert("RGB")
+
+        if not results or len(results[0].boxes) == 0:
+            return img
+
+        max_area = 0.0
+        best_box = None
+
+        for box in results[0].boxes:
+            xyxy = box.xyxy[0].tolist()  # [xmin, ymin, xmax, ymax]
+            w = xyxy[2] - xyxy[0]
+            h = xyxy[3] - xyxy[1]
+            area = w * h
+            if area > max_area:
+                max_area = area
+                best_box = xyxy
+
+        if best_box:
+            xmin, ymin, xmax, ymax = best_box
+            width, height = img.size
+
+            w = xmax - xmin
+            h = ymax - ymin
+
+            # マージン（20%）を追加してクロップ範囲を広げる
+            margin_x = w * 0.2
+            margin_y = h * 0.2
+
+            xmin = max(0, int(xmin - margin_x))
+            ymin = max(0, int(ymin - margin_y))
+            xmax = min(width, int(xmax + margin_x))
+            ymax = min(height, int(ymax + margin_y))
+
+            cropped_img = img.crop((xmin, ymin, xmax, ymax))
+            return cropped_img
+
+        return img
+    except Exception as e:
+        print(f"Error during character detection on {image_path.name}: {e}", file=sys.stderr)
+        return Image.open(image_path).convert("RGB")
+
 
 
 def convert_palette_to_rgba_if_needed(img: Image.Image) -> Image.Image:
@@ -114,7 +194,9 @@ def compute_clip_similarity(
     image_paths: List[Path],
     model_name: str,
     device_name: str,
-    batch_size: int = 64
+    batch_size: int = 64,
+    use_detection: bool = False,
+    yolo_model_path: Path = None
 ) -> List[Tuple[Path, float]]:
     """
     CLIPを用いて対象画像と画像群とのコサイン類似度を一括計算する。
@@ -136,9 +218,12 @@ def compute_clip_similarity(
 
     # 基準画像の特徴量抽出
     try:
-        target_image = Image.open(target_path).convert("RGB")
+        if use_detection and yolo_model_path:
+            target_image = detect_and_crop_character(target_path, yolo_model_path)
+        else:
+            target_image = Image.open(target_path).convert("RGB")
     except Exception as e:
-        print(f"Error opening target image {target_path}: {e}", file=sys.stderr)
+        print(f"Error processing target image {target_path}: {e}", file=sys.stderr)
         return []
 
     with torch.no_grad():
@@ -158,11 +243,14 @@ def compute_clip_similarity(
 
             for path in batch_paths:
                 try:
-                    img = Image.open(path).convert("RGB")
+                    if use_detection and yolo_model_path:
+                        img = detect_and_crop_character(path, yolo_model_path)
+                    else:
+                        img = Image.open(path).convert("RGB")
                     batch_images.append(img)
                     valid_paths.append(path)
                 except Exception as e:
-                    print(f"Error opening image {path}: {e}", file=sys.stderr)
+                    print(f"Error processing image {path}: {e}", file=sys.stderr)
 
             if not batch_images:
                 continue
@@ -271,6 +359,18 @@ def main() -> None:
         default=64,
         help="CLIP特徴量抽出時のバッチサイズ (default: 64)",
     )
+    parser.add_argument(
+        "--use-detection",
+        type=bool,
+        default=True,
+        help="YOLOを用いてキャラクター顔領域を検出し、その類似度を比較する",
+    )
+    parser.add_argument(
+        "--yolo-model",
+        type=str,
+        default="models/face_yolov8n.pt",
+        help="YOLOモデルのパスまたは保存先 (default: models/face_yolov8n.pt)",
+    )
 
     args = parser.parse_args()
 
@@ -302,6 +402,15 @@ def main() -> None:
     print(f"Target image: {input_path.name}")
     print(f"Metric: {args.metric}")
 
+    # YOLOモデルの準備
+    yolo_model_path = Path(args.yolo_model).resolve()
+    if args.use_detection:
+        try:
+            download_yolo_model(yolo_model_path)
+        except Exception as e:
+            print(f"Failed to prepare YOLO model, falling back to non-detection mode: {e}", file=sys.stderr)
+            args.use_detection = False
+
     # 類似度計算の実行
     if args.metric == "clip":
         results = compute_clip_similarity(
@@ -309,7 +418,9 @@ def main() -> None:
             image_paths,
             args.model_name,
             args.device,
-            args.batch_size
+            args.batch_size,
+            args.use_detection,
+            yolo_model_path
         )
     else:
         results = compute_other_similarity(
