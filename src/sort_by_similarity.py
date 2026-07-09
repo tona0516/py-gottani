@@ -12,14 +12,14 @@ from PIL import Image
 import torch
 from transformers import CLIPProcessor, CLIPModel
 
-from image_utils import (
+from utils.image import (
     SUPPORTED_EXTENSIONS,
     calculate_dhash,
     hamming_distance,
     compare_color_histograms,
     compare_pixel_difference,
 )
-from yolo_utils import download_yolo_model, detect_and_crop_character
+from utils.yolo import download_yolo_model, detect_and_crop_character
 
 
 def compute_clip_similarity(

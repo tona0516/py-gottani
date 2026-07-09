@@ -10,9 +10,9 @@ from typing import List
 import torch
 from sklearn.cluster import HDBSCAN
 
-from image_utils import SUPPORTED_EXTENSIONS
-from yolo_utils import download_yolo_model
-from clip_utils import extract_features
+from utils.image import SUPPORTED_EXTENSIONS
+from utils.yolo import download_yolo_model
+from utils.clip import extract_features
 from transformers import CLIPProcessor, CLIPModel
 
 

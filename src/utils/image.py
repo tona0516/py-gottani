@@ -7,6 +7,7 @@ import sys
 
 from PIL import Image
 
+
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 

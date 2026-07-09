@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
-from image_utils import (
+from utils.image import (
     SUPPORTED_EXTENSIONS,
     convert_palette_to_rgba_if_needed,
     calculate_dhash,

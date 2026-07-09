@@ -11,8 +11,8 @@ import random
 import shutil
 from datetime import datetime
 
-from image_utils import SUPPORTED_EXTENSIONS
-from clip_utils import ImageDataset, collate_fn_with_processor, extract_features
+from utils.image import SUPPORTED_EXTENSIONS
+from utils.clip import ImageDataset, collate_fn_with_processor, extract_features
 
 
 def evaluate_centroids(
