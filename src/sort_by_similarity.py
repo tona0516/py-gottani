@@ -11,6 +11,9 @@ import urllib.request
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from PIL import Image
+import torch
+from ultralytics import YOLO
+from transformers import CLIPProcessor, CLIPModel
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -39,14 +42,7 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
     """
     YOLOv8を用いて画像からキャラクター（顔など）を検出し、
     最大のバウンディングボックスをクロップした画像を返す。
-    検出されなかった場合は元の画像を返す。
     """
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        print("Error: ultralytics is not installed.", file=sys.stderr)
-        return Image.open(image_path).convert("RGB")
-
     try:
         model = YOLO(str(model_path))
         results = model(str(image_path), verbose=False)
@@ -89,9 +85,11 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
 
         return img
     except Exception as e:
-        print(f"Error during character detection on {image_path.name}: {e}", file=sys.stderr)
+        print(
+            f"Error during character detection on {image_path.name}: {e}",
+            file=sys.stderr,
+        )
         return Image.open(image_path).convert("RGB")
-
 
 
 def convert_palette_to_rgba_if_needed(img: Image.Image) -> Image.Image:
@@ -164,7 +162,9 @@ def compare_color_histograms(img1: Image.Image, img2: Image.Image) -> float:
         return 0.0
 
 
-def compare_pixel_difference(img1: Image.Image, img2: Image.Image, size: int = 128) -> float:
+def compare_pixel_difference(
+    img1: Image.Image, img2: Image.Image, size: int = 128
+) -> float:
     """
     2つの画像を縮小し、ピクセル間の平均絶対誤差（MAE）を計算する。
     値は 0.0 から 255.0 の間。
@@ -196,19 +196,20 @@ def compute_clip_similarity(
     device_name: str,
     batch_size: int = 64,
     use_detection: bool = False,
-    yolo_model_path: Path = None
+    yolo_model_path: Path = None,
 ) -> List[Tuple[Path, float]]:
     """
     CLIPを用いて対象画像と画像群とのコサイン類似度を一括計算する。
     """
-    try:
-        import torch
-        from transformers import CLIPProcessor, CLIPModel
-    except ImportError:
-        print("Error: torch or transformers is not installed. Please install them or use another metric.", file=sys.stderr)
-        sys.exit(1)
-
-    device = torch.device(device_name if device_name else ("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")))
+    device = torch.device(
+        device_name
+        if device_name
+        else (
+            "cuda"
+            if torch.cuda.is_available()
+            else ("mps" if torch.backends.mps.is_available() else "cpu")
+        )
+    )
     print(f"Using device: {device}")
 
     print(f"Loading CLIP model: {model_name}...")
@@ -229,7 +230,11 @@ def compute_clip_similarity(
     with torch.no_grad():
         target_inputs = processor(images=target_image, return_tensors="pt").to(device)
         target_outputs = model.get_image_features(**target_inputs)
-        target_feature = target_outputs.pooler_output if hasattr(target_outputs, "pooler_output") else target_outputs
+        target_feature = (
+            target_outputs.pooler_output
+            if hasattr(target_outputs, "pooler_output")
+            else target_outputs
+        )
         target_feature = target_feature / target_feature.norm(dim=-1, keepdim=True)
 
     results = []
@@ -257,10 +262,14 @@ def compute_clip_similarity(
 
             inputs = processor(images=batch_images, return_tensors="pt").to(device)
             outputs = model.get_image_features(**inputs)
-            features = outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
+            features = (
+                outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
+            )
             features = features / features.norm(dim=-1, keepdim=True)
 
-            similarities = torch.matmul(features, target_feature.T).squeeze(-1).cpu().tolist()
+            similarities = (
+                torch.matmul(features, target_feature.T).squeeze(-1).cpu().tolist()
+            )
 
             if isinstance(similarities, float):
                 similarities = [similarities]
@@ -276,9 +285,7 @@ def compute_clip_similarity(
 
 
 def compute_other_similarity(
-    target_path: Path,
-    image_paths: List[Path],
-    metric: str
+    target_path: Path, image_paths: List[Path], metric: str
 ) -> List[Tuple[Path, float]]:
     """
     dHash, Histogram, Pixel Diffのいずれかを用いて対象画像と画像群との類似度・距離を計算する。
@@ -331,7 +338,11 @@ def main() -> None:
         "-i", "--input", type=str, required=True, help="基準となる入力画像のパス"
     )
     parser.add_argument(
-        "-o", "--output-dir", type=str, required=True, help="コピー先の出力ディレクトリパス"
+        "-o",
+        "--output-dir",
+        type=str,
+        required=True,
+        help="コピー先の出力ディレクトリパス",
     )
     parser.add_argument(
         "-m",
@@ -376,7 +387,10 @@ def main() -> None:
 
     input_path = Path(args.input).resolve()
     if not input_path.exists() or not input_path.is_file():
-        print(f"Error: Input file {input_path} does not exist or is not a file.", file=sys.stderr)
+        print(
+            f"Error: Input file {input_path} does not exist or is not a file.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     input_dir = input_path.parent
@@ -384,7 +398,10 @@ def main() -> None:
 
     # コピー先とコピー元が同じディレクトリになるのを防ぐ
     if input_dir == output_dir:
-        print("Error: Output directory cannot be the same as the input image directory.", file=sys.stderr)
+        print(
+            "Error: Output directory cannot be the same as the input image directory.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # 同一ディレクトリ内の他画像一覧を取得
@@ -408,7 +425,10 @@ def main() -> None:
         try:
             download_yolo_model(yolo_model_path)
         except Exception as e:
-            print(f"Failed to prepare YOLO model, falling back to non-detection mode: {e}", file=sys.stderr)
+            print(
+                f"Failed to prepare YOLO model, falling back to non-detection mode: {e}",
+                file=sys.stderr,
+            )
             args.use_detection = False
 
     # 類似度計算の実行
@@ -420,14 +440,10 @@ def main() -> None:
             args.device,
             args.batch_size,
             args.use_detection,
-            yolo_model_path
+            yolo_model_path,
         )
     else:
-        results = compute_other_similarity(
-            input_path,
-            image_paths,
-            args.metric
-        )
+        results = compute_other_similarity(input_path, image_paths, args.metric)
 
     if not results:
         print("No similarity results generated.", file=sys.stderr)
@@ -452,7 +468,10 @@ def main() -> None:
     try:
         shutil.copy2(input_path, target_dest)
     except Exception as e:
-        print(f"Error copying target image {input_path.name} to 0000{target_ext}: {e}", file=sys.stderr)
+        print(
+            f"Error copying target image {input_path.name} to 0000{target_ext}: {e}",
+            file=sys.stderr,
+        )
 
     for idx, (path, val) in enumerate(sorted_results):
         ext = path.suffix
@@ -463,7 +482,9 @@ def main() -> None:
         except Exception as e:
             print(f"Error copying {path.name} to {new_name}: {e}", file=sys.stderr)
 
-    print(f"Done. Successfully sorted and copied {len(sorted_results) + 1} images (including target as 0000) to {output_dir}")
+    print(
+        f"Done. Successfully sorted and copied {len(sorted_results) + 1} images (including target as 0000) to {output_dir}"
+    )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,11 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from PIL import Image
+import torch
+from torch.utils.data import DataLoader, Dataset
+from transformers import CLIPProcessor, CLIPModel
+from sklearn.cluster import HDBSCAN
+from ultralytics import YOLO
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -39,14 +44,7 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
     """
     YOLOv8を用いて画像からキャラクター（顔など）を検出し、
     最大のバウンディングボックスをクロップした画像を返す。
-    検出されなかった場合は元の画像を返す。
     """
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        # ultralyticsがインストールされていない場合はログを出力して元の画像を返す
-        return Image.open(image_path).convert("RGB")
-
     try:
         model = YOLO(str(model_path))
         results = model(str(image_path), verbose=False)
@@ -89,7 +87,10 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
 
         return img
     except Exception as e:
-        print(f"Error during character detection on {image_path.name}: {e}", file=sys.stderr)
+        print(
+            f"Error during character detection on {image_path.name}: {e}",
+            file=sys.stderr,
+        )
         try:
             return Image.open(image_path).convert("RGB")
         except Exception:
@@ -105,25 +106,13 @@ def convert_palette_to_rgba_if_needed(img: Image.Image) -> Image.Image:
     return img
 
 
-# PyTorch / Transformersの依存確認
-try:
-    import torch
-    from torch.utils.data import DataLoader, Dataset
-    from transformers import CLIPProcessor, CLIPModel
-except ImportError:
-    print("Error: torch or transformers is not installed. Please install them to run this script.", file=sys.stderr)
-    sys.exit(1)
-
-# scikit-learnの依存確認 (HDBSCANに必要)
-try:
-    from sklearn.cluster import HDBSCAN
-except ImportError:
-    print("Error: scikit-learn is not installed. Please run 'uv sync' or install it to use HDBSCAN.", file=sys.stderr)
-    sys.exit(1)
-
-
 class ImageDataset(Dataset):
-    def __init__(self, image_paths: List[Path], use_detection: bool = False, yolo_model_path: Path = None):
+    def __init__(
+        self,
+        image_paths: List[Path],
+        use_detection: bool = False,
+        yolo_model_path: Path = None,
+    ):
         self.image_paths = image_paths
         self.use_detection = use_detection
         self.yolo_model_path = yolo_model_path
@@ -167,7 +156,7 @@ def extract_features(
     device: torch.device,
     batch_size: int = 64,
     use_detection: bool = False,
-    yolo_model_path: Path = None
+    yolo_model_path: Path = None,
 ) -> Tuple[torch.Tensor, List[str]]:
     """
     CLIPを用いて画像群の特徴量を一括抽出する。
@@ -200,7 +189,9 @@ def extract_features(
 
             pixel_values = batch_inputs["pixel_values"].to(device)
             outputs = model.get_image_features(pixel_values=pixel_values)
-            image_features = outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
+            image_features = (
+                outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
+            )
             # L2正規化して類似度計算をドット積のみにする
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
@@ -299,7 +290,10 @@ def copy_clustered_images(
             try:
                 shutil.copy2(src_path, dest_path)
             except Exception as e:
-                print(f"Error copying {src_path.name} to {dest_path.name}: {e}", file=sys.stderr)
+                print(
+                    f"Error copying {src_path.name} to {dest_path.name}: {e}",
+                    file=sys.stderr,
+                )
 
 
 def main() -> None:
@@ -362,11 +356,17 @@ def main() -> None:
     output_dir = Path(args.output_dir).resolve()
 
     if not input_dir.exists() or not input_dir.is_dir():
-        print(f"Error: Input directory {input_dir} does not exist or is not a directory.", file=sys.stderr)
+        print(
+            f"Error: Input directory {input_dir} does not exist or is not a directory.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if input_dir == output_dir:
-        print("Error: Output directory cannot be the same as the input directory.", file=sys.stderr)
+        print(
+            "Error: Output directory cannot be the same as the input directory.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # 入力フォルダ内の画像一覧を取得
@@ -382,7 +382,11 @@ def main() -> None:
     print(f"Found {len(image_paths)} images in {input_dir}")
 
     # 最適なデバイスの自動検出
-    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
     print(f"Using device: {device}")
 
     # YOLOモデルの準備
@@ -391,7 +395,10 @@ def main() -> None:
         try:
             download_yolo_model(yolo_model_path)
         except Exception as e:
-            print(f"Failed to prepare YOLO model, falling back to non-detection mode: {e}", file=sys.stderr)
+            print(
+                f"Failed to prepare YOLO model, falling back to non-detection mode: {e}",
+                file=sys.stderr,
+            )
             args.use_detection = False
 
     # CLIPモデルのロード
@@ -411,7 +418,7 @@ def main() -> None:
         device,
         batch_size=args.batch_size,
         use_detection=args.use_detection,
-        yolo_model_path=yolo_model_path if args.use_detection else None
+        yolo_model_path=yolo_model_path if args.use_detection else None,
     )
 
     if len(valid_paths) == 0:
@@ -425,7 +432,7 @@ def main() -> None:
         clusterer = HDBSCAN(
             min_cluster_size=args.min_cluster_size,
             min_samples=args.min_samples,
-            metric="cosine"
+            metric="cosine",
         )
         labels_numpy = clusterer.fit_predict(features_numpy)
         labels = torch.tensor(labels_numpy, dtype=torch.long)
@@ -434,13 +441,7 @@ def main() -> None:
         sys.exit(1)
 
     # コピー処理
-    copy_clustered_images(
-        valid_paths,
-        labels,
-        features,
-        output_dir,
-        args.rename_format
-    )
+    copy_clustered_images(valid_paths, labels, features, output_dir, args.rename_format)
 
     print(f"Done. Successfully clustered and copied images to {output_dir}")
 

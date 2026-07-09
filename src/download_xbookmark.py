@@ -61,9 +61,7 @@ def to_original_quality(url: str) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def filename_from_url(
-    url: str, username: str
-) -> str:
+def filename_from_url(url: str, username: str) -> str:
     """画像情報から保存用のファイル名を作る (@アカウント名_URLエンコードされた画像URL.拡張子)"""
     # クエリパラメータから拡張子を取得
     parsed = urlparse(url)
@@ -211,7 +209,10 @@ async def main():
         "--dir", default=SAVE_DIR, help=f"画像の保存先フォルダ (デフォルト: {SAVE_DIR})"
     )
     parser.add_argument(
-        "--workers", type=int, default=10, help="並列ダウンロードの接続数 (デフォルト: 10)"
+        "--workers",
+        type=int,
+        default=10,
+        help="並列ダウンロードの接続数 (デフォルト: 10)",
     )
     args = parser.parse_args()
 

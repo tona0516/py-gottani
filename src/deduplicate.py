@@ -194,7 +194,9 @@ def verify_duplicates_detailed(
                     return False
 
             # 2. 中解像度ピクセル差分の比較と差分割合の検証
-            if diff_threshold >= 0 or (pixel_diff_ratio >= 0 and pixel_diff_threshold >= 0):
+            if diff_threshold >= 0 or (
+                pixel_diff_ratio >= 0 and pixel_diff_threshold >= 0
+            ):
                 pdt = max(0, pixel_diff_threshold)
                 mae, diff_count, diff_ratio = analyze_pixel_differences(
                     img1, img2, diff_threshold=pdt
@@ -214,7 +216,6 @@ def verify_duplicates_detailed(
             file=sys.stderr,
         )
         return False
-
 
 
 def read_image_details(path, hash_size):
