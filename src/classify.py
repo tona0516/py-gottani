@@ -4,109 +4,15 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
-import time
 import random
 import shutil
 from datetime import datetime
 
-
-class ImageDataset(Dataset):
-    def __init__(self, image_paths: List[Path]):
-        self.image_paths = image_paths
-
-    def __len__(self) -> int:
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int) -> Tuple[Any, str]:
-        path = self.image_paths[idx]
-        try:
-            image = Image.open(path).convert("RGB")
-            return image, str(path)
-        except Exception as e:
-            # 破損ファイルなどのエラーハンドリング
-            return None, str(path)
-
-
-def collate_fn_with_processor(
-    batch: List[Tuple[Any, str]], processor: CLIPProcessor
-) -> Tuple[Any, List[str]]:
-    # 読み込みに失敗した（Noneの）アイテムを除外
-    valid_batch = [item for item in batch if item[0] is not None]
-    if len(valid_batch) == 0:
-        return None, []
-    images = [item[0] for item in valid_batch]
-    paths = [item[1] for item in valid_batch]
-
-    # 複数画像をまとめてテンソル化
-    inputs = processor(images=images, return_tensors="pt")
-    return inputs, paths
-
-
-def extract_features(
-    image_paths: List[Path],
-    model: CLIPModel,
-    processor: CLIPProcessor,
-    device: torch.device,
-    batch_size: int = 64,
-) -> Tuple[torch.Tensor, List[str]]:
-
-    dataset = ImageDataset(image_paths)
-
-    # collate_fnでプロセッサを使用するためのクロージャ
-    def custom_collate(batch):
-        return collate_fn_with_processor(batch, processor)
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,  # macOSでのマルチプロセスバグを避けるためシングルスレッドロード
-        collate_fn=custom_collate,
-    )
-
-    all_features = []
-    valid_paths = []
-
-    total_images = len(image_paths)
-    processed_images = 0
-    start_time = time.time()
-
-    model.eval()
-    with torch.no_grad():
-        for batch_inputs, batch_paths in dataloader:
-            if batch_inputs is None:
-                continue
-
-            pixel_values = batch_inputs["pixel_values"].to(device)
-            # CLIP画像エンコーダで特徴抽出 (v5ではBaseModelOutputWithPoolingが返るためpooler_outputを取得)
-            outputs = model.get_image_features(pixel_values=pixel_values)
-            image_features = outputs.pooler_output
-            # L2正規化して類似度計算をドット積のみにする
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-
-            all_features.append(image_features.cpu())
-            valid_paths.extend(batch_paths)
-
-            processed_images += len(batch_paths)
-            elapsed = time.time() - start_time
-            speed = processed_images / elapsed if elapsed > 0 else 0
-            eta = (total_images - processed_images) / speed if speed > 0 else 0
-
-            print(
-                f"Processed {processed_images}/{total_images} images ({processed_images/total_images*100:.1f}%) | "
-                f"Speed: {speed:.1f} img/s | ETA: {eta:.1f}s",
-                end="\r",
-            )
-
-    print("\nExtraction complete.")
-
-    if len(all_features) == 0:
-        return torch.empty(0), []
-
-    return torch.cat(all_features, dim=0), valid_paths
+from image_utils import SUPPORTED_EXTENSIONS
+from clip_utils import ImageDataset, collate_fn_with_processor, extract_features
 
 
 def evaluate_centroids(
@@ -228,13 +134,11 @@ def train_mode(args: argparse.Namespace) -> None:
     illust_dir = Path(args.images_dir) / "illust_manga"
     photo_dir = Path(args.images_dir) / "photo"
 
-    valid_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-
     illust_paths = [
-        p for p in illust_dir.glob("**/*") if p.suffix.lower() in valid_extensions
+        p for p in illust_dir.glob("**/*") if p.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
     photo_paths = [
-        p for p in photo_dir.glob("**/*") if p.suffix.lower() in valid_extensions
+        p for p in photo_dir.glob("**/*") if p.suffix.lower() in SUPPORTED_EXTENSIONS
     ]
 
     print(
@@ -357,14 +261,15 @@ def predict_mode(args: argparse.Namespace) -> None:
     # 対象ファイル収集
     input_path = Path(args.input)
     image_paths = []
-    valid_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
     if input_path.is_file():
-        if input_path.suffix.lower() in valid_extensions:
+        if input_path.suffix.lower() in SUPPORTED_EXTENSIONS:
             image_paths.append(input_path)
     elif input_path.is_dir():
         image_paths = [
-            p for p in input_path.glob("**/*") if p.suffix.lower() in valid_extensions
+            p
+            for p in input_path.glob("**/*")
+            if p.suffix.lower() in SUPPORTED_EXTENSIONS
         ]
 
     if len(image_paths) == 0:

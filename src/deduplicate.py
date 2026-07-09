@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+from image_utils import (
+    SUPPORTED_EXTENSIONS,
+    convert_palette_to_rgba_if_needed,
+    calculate_dhash,
+    hamming_distance,
+    compare_color_histograms,
+    compare_pixel_difference,
+)
 
 
 @dataclass
@@ -42,111 +49,14 @@ class UnionFind:
         return False
 
 
-def convert_palette_to_rgba_if_needed(img):
-    """
-    Pモードで透過情報がある場合、RGBAに変換する（Pillowの警告回避）。
-    """
-    if img.mode == "P" and "transparency" in img.info:
-        return img.convert("RGBA")
-    return img
-
-
-def calculate_dhash(img, hash_size=8):
-    """
-    ImageオブジェクトからdHash（Difference Hash）値を計算する。
-    """
-    try:
-        # dHashは各行の隣接ピクセルを比較するため、横方向に1ピクセル多く縮小する
-        img = convert_palette_to_rgba_if_needed(img)
-        img_resized = img.convert("L").resize(
-            (hash_size + 1, hash_size), Image.Resampling.BILINEAR
-        )
-        pixels = list(img_resized.tobytes())
-
-        difference = []
-        for row in range(hash_size):
-            for col in range(hash_size):
-                pixel_left = pixels[row * (hash_size + 1) + col]
-                pixel_right = pixels[row * (hash_size + 1) + col + 1]
-                difference.append(pixel_left > pixel_right)
-
-        decimal_value = 0
-        for bit in difference:
-            decimal_value = (decimal_value << 1) | bit
-        return decimal_value
-    except Exception as e:
-        print(f"Error calculating hash: {e}", file=sys.stderr)
-        return None
-
-
-def hamming_distance(hash1, hash2):
-    """
-    2つのハッシュ値のハミング距離（異なるビット数）を計算する。
-    """
-    return bin(hash1 ^ hash2).count("1")
-
-
-def compare_color_histograms(img1, img2):
-    """
-    Pillowのhistogram()を用いて、2つの画像の正規化ヒストグラム交差（Histogram Intersection）を計算する。
-    値は 0.0（全く異なる）から 1.0（完全に一致）の間になる。
-    """
-    try:
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1 = img1.convert("RGB")
-        img2 = img2.convert("RGB")
-
-        hist1 = img1.histogram()
-        hist2 = img2.histogram()
-
-        # 各チャンネル（R, G, B）のピクセル数で割って正規化
-        total1 = img1.width * img1.height
-        total2 = img2.width * img2.height
-
-        # ピクセル数で正規化したヒストグラムの交差を計算
-        intersection = 0.0
-        for h1, h2 in zip(hist1, hist2):
-            intersection += min(h1 / total1, h2 / total2)
-
-        # 3チャンネル合計なので、3.0で割って 0.0 - 1.0 の範囲にする
-        return intersection / 3.0
-    except Exception as e:
-        print(f"ヒストグラム比較中にエラーが発生しました: {e}", file=sys.stderr)
-        return 0.0
-
-
-def compare_pixel_difference(img1, img2, size=128):
-    """
-    2つの画像を中解像度のグレースケールに縮小し、ピクセル間の平均絶対誤差（MAE）を計算する。
-    値は 0.0 から 255.0 の間になり、0.0 に近いほどピクセルレベルで同一。
-    """
-    try:
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-        img2_gray = img2.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-
-        bytes1 = img1_gray.tobytes()
-        bytes2 = img2_gray.tobytes()
-
-        total_diff = 0
-        for b1, b2 in zip(bytes1, bytes2):
-            total_diff += abs(b1 - b2)
-
-        mae = total_diff / (size * size)
-        return mae
-    except Exception as e:
-        print(f"ピクセル差分比較中にエラーが発生しました: {e}", file=sys.stderr)
-        return 255.0
-
-
 def analyze_pixel_differences(img1, img2, size=128, diff_threshold=15):
     """
     2つの画像を中解像度のグレースケールに縮小し、ピクセル間の差分を分析する。
     (MAE, 閾値を超える差分ピクセル数, 差分ピクセルの割合) を返す。
     """
     try:
+        mae = compare_pixel_difference(img1, img2, size)
+
         img1 = convert_palette_to_rgba_if_needed(img1)
         img2 = convert_palette_to_rgba_if_needed(img2)
         img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
@@ -155,17 +65,13 @@ def analyze_pixel_differences(img1, img2, size=128, diff_threshold=15):
         bytes1 = img1_gray.tobytes()
         bytes2 = img2_gray.tobytes()
 
-        total_diff = 0
         significant_diff_count = 0
         total_pixels = size * size
 
         for b1, b2 in zip(bytes1, bytes2):
-            diff = abs(b1 - b2)
-            total_diff += diff
-            if diff >= diff_threshold:
+            if abs(b1 - b2) >= diff_threshold:
                 significant_diff_count += 1
 
-        mae = total_diff / total_pixels
         diff_ratio = significant_diff_count / total_pixels
         return mae, significant_diff_count, diff_ratio
     except Exception as e:

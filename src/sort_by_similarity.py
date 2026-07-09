@@ -3,190 +3,23 @@
 類似度の近い順に採番して別ディレクトリにコピーするスクリプト。
 """
 
-import os
 import sys
 import argparse
 import shutil
-import urllib.request
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 from PIL import Image
 import torch
-from ultralytics import YOLO
 from transformers import CLIPProcessor, CLIPModel
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-
-
-def download_yolo_model(dest_path: Path) -> Path:
-    """
-    アニメ顔検出用のYOLOv8モデルをHugging Faceからダウンロードする。
-    """
-    url = "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt"
-
-    if dest_path.exists():
-        return dest_path
-
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading YOLO model from {url}...")
-    try:
-        urllib.request.urlretrieve(url, dest_path)
-        print(f"Model downloaded successfully and saved to {dest_path}")
-    except Exception as e:
-        print(f"Error downloading model: {e}", file=sys.stderr)
-        raise e
-    return dest_path
-
-
-def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image:
-    """
-    YOLOv8を用いて画像からキャラクター（顔など）を検出し、
-    最大のバウンディングボックスをクロップした画像を返す。
-    """
-    try:
-        model = YOLO(str(model_path))
-        results = model(str(image_path), verbose=False)
-
-        img = Image.open(image_path).convert("RGB")
-
-        if not results or len(results[0].boxes) == 0:
-            return img
-
-        max_area = 0.0
-        best_box = None
-
-        for box in results[0].boxes:
-            xyxy = box.xyxy[0].tolist()  # [xmin, ymin, xmax, ymax]
-            w = xyxy[2] - xyxy[0]
-            h = xyxy[3] - xyxy[1]
-            area = w * h
-            if area > max_area:
-                max_area = area
-                best_box = xyxy
-
-        if best_box:
-            xmin, ymin, xmax, ymax = best_box
-            width, height = img.size
-
-            w = xmax - xmin
-            h = ymax - ymin
-
-            # マージン（20%）を追加してクロップ範囲を広げる
-            margin_x = w * 0.2
-            margin_y = h * 0.2
-
-            xmin = max(0, int(xmin - margin_x))
-            ymin = max(0, int(ymin - margin_y))
-            xmax = min(width, int(xmax + margin_x))
-            ymax = min(height, int(ymax + margin_y))
-
-            cropped_img = img.crop((xmin, ymin, xmax, ymax))
-            return cropped_img
-
-        return img
-    except Exception as e:
-        print(
-            f"Error during character detection on {image_path.name}: {e}",
-            file=sys.stderr,
-        )
-        return Image.open(image_path).convert("RGB")
-
-
-def convert_palette_to_rgba_if_needed(img: Image.Image) -> Image.Image:
-    """
-    Pモードで透過情報がある場合、RGBAに変換する（Pillowの警告回避）。
-    """
-    if img.mode == "P" and "transparency" in img.info:
-        return img.convert("RGBA")
-    return img
-
-
-def calculate_dhash(img: Image.Image, hash_size: int = 8) -> int:
-    """
-    ImageオブジェクトからdHash（Difference Hash）値を計算する。
-    """
-    try:
-        img = convert_palette_to_rgba_if_needed(img)
-        img_resized = img.convert("L").resize(
-            (hash_size + 1, hash_size), Image.Resampling.BILINEAR
-        )
-        pixels = list(img_resized.tobytes())
-
-        difference = []
-        for row in range(hash_size):
-            for col in range(hash_size):
-                pixel_left = pixels[row * (hash_size + 1) + col]
-                pixel_right = pixels[row * (hash_size + 1) + col + 1]
-                difference.append(pixel_left > pixel_right)
-
-        decimal_value = 0
-        for bit in difference:
-            decimal_value = (decimal_value << 1) | bit
-        return decimal_value
-    except Exception as e:
-        print(f"Error calculating dhash: {e}", file=sys.stderr)
-        return None
-
-
-def hamming_distance(hash1: int, hash2: int) -> int:
-    """
-    2つのハッシュ値のハミング距離（異なるビット数）を計算する。
-    """
-    return bin(hash1 ^ hash2).count("1")
-
-
-def compare_color_histograms(img1: Image.Image, img2: Image.Image) -> float:
-    """
-    Pillowのhistogram()を用いて、2つの画像の正規化ヒストグラム交差（Histogram Intersection）を計算する。
-    値は 0.0 から 1.0 の間。
-    """
-    try:
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1 = img1.convert("RGB")
-        img2 = img2.convert("RGB")
-
-        hist1 = img1.histogram()
-        hist2 = img2.histogram()
-
-        total1 = img1.width * img1.height
-        total2 = img2.width * img2.height
-
-        intersection = 0.0
-        for h1, h2 in zip(hist1, hist2):
-            intersection += min(h1 / total1, h2 / total2)
-
-        return intersection / 3.0
-    except Exception as e:
-        print(f"Error comparing color histograms: {e}", file=sys.stderr)
-        return 0.0
-
-
-def compare_pixel_difference(
-    img1: Image.Image, img2: Image.Image, size: int = 128
-) -> float:
-    """
-    2つの画像を縮小し、ピクセル間の平均絶対誤差（MAE）を計算する。
-    値は 0.0 から 255.0 の間。
-    """
-    try:
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-        img2_gray = img2.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-
-        bytes1 = img1_gray.tobytes()
-        bytes2 = img2_gray.tobytes()
-
-        total_diff = 0
-        for b1, b2 in zip(bytes1, bytes2):
-            total_diff += abs(b1 - b2)
-
-        mae = total_diff / (size * size)
-        return mae
-    except Exception as e:
-        print(f"Error comparing pixel difference: {e}", file=sys.stderr)
-        return 255.0
+from image_utils import (
+    SUPPORTED_EXTENSIONS,
+    calculate_dhash,
+    hamming_distance,
+    compare_color_histograms,
+    compare_pixel_difference,
+)
+from yolo_utils import download_yolo_model, detect_and_crop_character
 
 
 def compute_clip_similarity(
