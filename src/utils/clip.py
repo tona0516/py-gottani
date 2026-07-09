@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 
-from yolo_utils import detect_and_crop_character
+from utils.yolo import detect_and_crop_character
 
 
 class ImageDataset(Dataset):
