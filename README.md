@@ -1,4 +1,4 @@
-# image-util
+# py-gottani
 
 ## Setup
 ```
