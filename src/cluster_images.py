@@ -16,15 +16,16 @@ from utils.clip import extract_features
 from transformers import CLIPProcessor, CLIPModel
 
 
-def move_clustered_images(
+def save_clustered_images(
     image_paths: List[str],
     labels: torch.Tensor,
     features: torch.Tensor,
     output_root: Path,
     rename_format: str,
+    action: str = "copy",
 ) -> None:
     """
-    クラスタリングされた画像をフォルダ毎に分け、類似度順に採番して移動する。
+    クラスタリングされた画像をフォルダ毎に分け、類似度順に採番してコピーまたは移動する。
     """
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -32,7 +33,8 @@ def move_clustered_images(
     unique_labels = torch.unique(labels)
     image_paths_np = [Path(p) for p in image_paths]
 
-    print(f"\nMoving clustered images to {output_root}...")
+    action_label = "Moving" if action == "move" else "Copying"
+    print(f"\n{action_label} clustered images to {output_root}...")
 
     for k in unique_labels.tolist():
         indices = (labels == k).nonzero(as_tuple=True)[0]
@@ -87,17 +89,21 @@ def move_clustered_images(
                     counter += 1
 
             try:
-                shutil.move(src_path, dest_path)
+                if action == "move":
+                    shutil.move(src_path, dest_path)
+                else:
+                    shutil.copy2(src_path, dest_path)
             except Exception as e:
+                err_action = "moving" if action == "move" else "copying"
                 print(
-                    f"Error moving {src_path.name} to {dest_path.name}: {e}",
+                    f"Error {err_action} {src_path.name} to {dest_path.name}: {e}",
                     file=sys.stderr,
                 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="指定フォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダに移動します。"
+        description="指定フォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダにコピーまたは移動します。"
     )
     parser.add_argument(
         "-i", "--input-dir", type=str, required=True, help="入力画像フォルダ"
@@ -147,6 +153,13 @@ def main() -> None:
         default="original",
         choices=["prefix", "number", "original"],
         help="ファイルリネーム形式。prefix: 0001_name.jpg, number: 0001.jpg, original: 元のまま (default: original)",
+    )
+    parser.add_argument(
+        "--action",
+        type=str,
+        default="copy",
+        choices=["copy", "move"],
+        help="クラスタリング後の処理方法。copy: コピーする, move: 移動する (default: copy)",
     )
 
     args = parser.parse_args()
@@ -239,10 +252,18 @@ def main() -> None:
         print(f"Error during HDBSCAN clustering: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 移動処理
-    move_clustered_images(valid_paths, labels, features, output_dir, args.rename_format)
+    # コピーまたは移動処理
+    save_clustered_images(
+        valid_paths,
+        labels,
+        features,
+        output_dir,
+        args.rename_format,
+        action=args.action,
+    )
 
-    print(f"Done. Successfully clustered and moved images to {output_dir}")
+    action_past_verb = "copied" if args.action == "copy" else "moved"
+    print(f"Done. Successfully clustered and {action_past_verb} images to {output_dir}")
 
 
 if __name__ == "__main__":
