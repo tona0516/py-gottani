@@ -13,12 +13,13 @@ from ultralytics import YOLO
 
 def download_yolo_model(dest_path: Path) -> Path:
     """
-    アニメ顔検出用のYOLOv8モデルをHugging Faceからダウンロードする。
+    顔検出用のYOLOv8モデル（または指定されたモデル）をHugging Faceからダウンロードする。
     """
-    url = "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt"
-
     if dest_path.exists():
         return dest_path
+
+    model_name = dest_path.name
+    url = f"https://huggingface.co/Bingsu/adetailer/resolve/main/{model_name}"
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"YOLOモデルをダウンロード中: {url}...")
@@ -33,7 +34,7 @@ def download_yolo_model(dest_path: Path) -> Path:
 
 def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image:
     """
-    YOLOv8を用いて画像からキャラクター（顔など）を検出し、
+    YOLOv8を用いて画像から顔領域（またはオブジェクト等）を検出し、
     最大のバウンディングボックスをクロップした画像を返す。
     """
     try:

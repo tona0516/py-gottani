@@ -1,5 +1,5 @@
 """
-指定されたフォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダにコピーするスクリプト。
+指定されたフォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダに移動するスクリプト。
 """
 
 import sys
@@ -16,7 +16,7 @@ from utils.clip import extract_features
 from transformers import CLIPProcessor, CLIPModel
 
 
-def copy_clustered_images(
+def move_clustered_images(
     image_paths: List[str],
     labels: torch.Tensor,
     features: torch.Tensor,
@@ -24,7 +24,7 @@ def copy_clustered_images(
     rename_format: str,
 ) -> None:
     """
-    クラスタリングされた画像をフォルダ毎に分け、類似度順に採番してコピーする。
+    クラスタリングされた画像をフォルダ毎に分け、類似度順に採番して移動する。
     """
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -32,7 +32,7 @@ def copy_clustered_images(
     unique_labels = torch.unique(labels)
     image_paths_np = [Path(p) for p in image_paths]
 
-    print(f"\nCopying clustered images to {output_root}...")
+    print(f"\nMoving clustered images to {output_root}...")
 
     for k in unique_labels.tolist():
         indices = (labels == k).nonzero(as_tuple=True)[0]
@@ -87,23 +87,23 @@ def copy_clustered_images(
                     counter += 1
 
             try:
-                shutil.copy2(src_path, dest_path)
+                shutil.move(src_path, dest_path)
             except Exception as e:
                 print(
-                    f"Error copying {src_path.name} to {dest_path.name}: {e}",
+                    f"Error moving {src_path.name} to {dest_path.name}: {e}",
                     file=sys.stderr,
                 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="指定フォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダにコピーします。"
+        description="指定フォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダに移動します。"
     )
     parser.add_argument(
         "-i", "--input-dir", type=str, required=True, help="入力画像フォルダ"
     )
     parser.add_argument(
-        "-o", "--output-dir", type=str, required=True, help="コピー出力先フォルダ"
+        "-o", "--output-dir", type=str, required=True, help="移動先フォルダ"
     )
     parser.add_argument(
         "--min-cluster-size",
@@ -121,13 +121,13 @@ def main() -> None:
         "--use-detection",
         type=bool,
         default=True,
-        help="YOLOを用いてキャラクター顔領域を検出し、その特徴量でクラスタリングを行う (default: True)",
+        help="YOLOを用いて顔領域を検出し、その特徴量でクラスタリングを行う (default: True)",
     )
     parser.add_argument(
         "--yolo-model",
         type=str,
         default="models/face_yolov8n.pt",
-        help="YOLOモデルのパスまたは保存先 (default: models/face_yolov8n.pt)",
+        help="YOLOモデルのパスまたは保存先。Bingsu/adetailerから動的にダウンロード可能です (default: models/face_yolov8n.pt)",
     )
     parser.add_argument(
         "--model-name",
@@ -144,9 +144,9 @@ def main() -> None:
     parser.add_argument(
         "--rename-format",
         type=str,
-        default="number",
+        default="original",
         choices=["prefix", "number", "original"],
-        help="ファイルリネーム形式。prefix: 0001_name.jpg, number: 0001.jpg, original: 元のまま (default: number)",
+        help="ファイルリネーム形式。prefix: 0001_name.jpg, number: 0001.jpg, original: 元のまま (default: original)",
     )
 
     args = parser.parse_args()
@@ -239,10 +239,10 @@ def main() -> None:
         print(f"Error during HDBSCAN clustering: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # コピー処理
-    copy_clustered_images(valid_paths, labels, features, output_dir, args.rename_format)
+    # 移動処理
+    move_clustered_images(valid_paths, labels, features, output_dir, args.rename_format)
 
-    print(f"Done. Successfully clustered and copied images to {output_dir}")
+    print(f"Done. Successfully clustered and moved images to {output_dir}")
 
 
 if __name__ == "__main__":
