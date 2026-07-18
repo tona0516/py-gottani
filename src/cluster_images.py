@@ -1,5 +1,5 @@
 """
-指定されたフォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダに移動するスクリプト。
+指定されたフォルダ直下の画像をクラスタリングし、クラスタごとに採番して別のフォルダに移動するスクリプト。
 """
 
 import sys
@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import List
 import torch
-from sklearn.cluster import HDBSCAN
+from sklearn.cluster import AgglomerativeClustering
 
 from utils.image import SUPPORTED_EXTENSIONS
 from utils.yolo import download_yolo_model
@@ -103,63 +103,86 @@ def save_clustered_images(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="指定フォルダ直下の画像をHDBSCANでクラスタリングし、クラスタごとに採番して別のフォルダにコピーまたは移動します。"
+        description="指定フォルダ直下の画像を階層的クラスタリングでクラスタリングし、クラスタごとに採番して別のフォルダにコピーまたは移動します。"
     )
-    parser.add_argument(
-        "-i", "--input-dir", type=str, required=True, help="入力画像フォルダ"
+
+    # グループ定義
+    io_group = parser.add_argument_group("基本設定 (Input/Output & General Settings)")
+    feature_group = parser.add_argument_group("顔検出・特徴量抽出設定 (Feature Extraction & Face Detection)")
+    cluster_group = parser.add_argument_group("クラスタリング設定 (Clustering Settings)")
+
+    # 基本設定 (IO)
+    io_group.add_argument(
+        "-i", "--input-dir", type=str, required=True, help="入力元の画像ディレクトリ"
     )
-    parser.add_argument(
-        "-o", "--output-dir", type=str, required=True, help="移動先フォルダ"
+    io_group.add_argument(
+        "-o", "--output-dir", type=str, required=True, help="出力先のディレクトリ"
     )
-    parser.add_argument(
-        "--min-cluster-size",
-        type=int,
-        default=5,
-        help="HDBSCANのクラスタとみなす最小サンプル数 (default: 5)",
+    io_group.add_argument(
+        "--action",
+        type=str,
+        default="copy",
+        choices=["copy", "move"],
+        help="クラスタリング後の処理方法。copy: コピー, move: 移動 (default: copy)",
     )
-    parser.add_argument(
-        "--min-samples",
-        type=int,
-        default=None,
-        help="HDBSCANの密度判定用近傍点数。None の場合は min-cluster-size と同一になります (default: None)",
+    io_group.add_argument(
+        "--rename-format",
+        type=str,
+        default="original",
+        choices=["prefix", "number", "original"],
+        help="ファイル名のリネーム形式。prefix: 連番+元名前, number: 連番のみ, original: 変更なし (default: original)",
     )
-    parser.add_argument(
+
+    # 特徴量・顔検出
+    feature_group.add_argument(
+        "--feature-type",
+        type=str,
+        default="facenet",
+        choices=["clip", "facenet"],
+        help="特徴量抽出に使用するモデル。facenet: 顔認識, clip: 汎用画像認識 (default: facenet)",
+    )
+    feature_group.add_argument(
         "--use-detection",
-        type=bool,
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="YOLOを用いて顔領域を検出し、その特徴量でクラスタリングを行う (default: True)",
+        help="YOLOを用いた顔検出を行うかどうか。無効にする場合は --no-use-detection を指定 (default: True)",
     )
-    parser.add_argument(
+    feature_group.add_argument(
         "--yolo-model",
         type=str,
         default="models/face_yolov8n.pt",
-        help="YOLOモデルのパスまたは保存先。Bingsu/adetailerから動的にダウンロード可能です (default: models/face_yolov8n.pt)",
+        help="YOLO顔検出モデルの保存先パス (default: models/face_yolov8n.pt)",
     )
-    parser.add_argument(
+    feature_group.add_argument(
         "--model-name",
         type=str,
         default="openai/clip-vit-base-patch32",
-        help="CLIPモデル名 (default: openai/clip-vit-base-patch32)",
+        help="CLIP使用時の事前学習済みモデル名 (default: openai/clip-vit-base-patch32)",
     )
-    parser.add_argument(
+    feature_group.add_argument(
         "--batch-size",
         type=int,
         default=256,
         help="特徴量抽出時のバッチサイズ (default: 256)",
     )
-    parser.add_argument(
-        "--rename-format",
-        type=str,
-        default="original",
-        choices=["prefix", "number", "original"],
-        help="ファイルリネーム形式。prefix: 0001_name.jpg, number: 0001.jpg, original: 元のまま (default: original)",
+    feature_group.add_argument(
+        "--crop-margin",
+        type=float,
+        default=0.0,
+        help="顔検出時にクロップする領域のマージン比率。負の値で内側、正の値で外側へ拡張 (default: 0.0)",
     )
-    parser.add_argument(
-        "--action",
-        type=str,
-        default="copy",
-        choices=["copy", "move"],
-        help="クラスタリング後の処理方法。copy: コピーする, move: 移動する (default: copy)",
+    feature_group.add_argument(
+        "--fallback-to-full-image",
+        action="store_true",
+        help="顔検出に失敗した際、画像全体をフォールバックとして使用 (default: False)",
+    )
+
+    # クラスタリング
+    cluster_group.add_argument(
+        "--distance-threshold",
+        type=float,
+        default=0.60,
+        help="Agglomerative Clustering のコサイン距離しきい値。小さいほど類似度の判定が厳しくなります (default: 0.60)",
     )
 
     args = parser.parse_args()
@@ -201,6 +224,10 @@ def main() -> None:
     )
     print(f"Using device: {device}")
 
+    if args.feature_type == "facenet" and not args.use_detection:
+        print("Warning: Facenet requires face detection. Forcing --use-detection to True.", file=sys.stderr)
+        args.use_detection = True
+
     # YOLOモデルの準備
     yolo_model_path = Path(args.yolo_model).resolve()
     if args.use_detection:
@@ -212,44 +239,76 @@ def main() -> None:
                 file=sys.stderr,
             )
             args.use_detection = False
+            if args.feature_type == "facenet":
+                print("Facenet requires face detection. Falling back to CLIP feature extraction.", file=sys.stderr)
+                args.feature_type = "clip"
 
-    # CLIPモデルのロード
-    print(f"Loading CLIP model: {args.model_name}...")
-    try:
-        model = CLIPModel.from_pretrained(args.model_name).to(device)
-        processor = CLIPProcessor.from_pretrained(args.model_name)
-    except Exception as e:
-        print(f"Error loading CLIP model: {e}", file=sys.stderr)
-        sys.exit(1)
+    # モデルのロードと特徴量抽出
+    if args.feature_type == "facenet":
+        from utils.facenet import load_facenet_model, extract_facenet_features
+        print("Loading Facenet model...")
+        try:
+            model = load_facenet_model(device)
+        except Exception as e:
+            print(f"Error loading Facenet model: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    # 特徴量抽出
-    features, valid_paths = extract_features(
-        image_paths,
-        model,
-        processor,
-        device,
-        batch_size=args.batch_size,
-        use_detection=args.use_detection,
-        yolo_model_path=yolo_model_path if args.use_detection else None,
-    )
+        features, valid_paths = extract_facenet_features(
+            image_paths,
+            model,
+            device,
+            batch_size=args.batch_size,
+            use_detection=args.use_detection,
+            yolo_model_path=yolo_model_path if args.use_detection else None,
+            fallback_to_full_image=args.fallback_to_full_image,
+            crop_margin=args.crop_margin,
+        )
+    else:
+        # CLIPモデルのロード
+        print(f"Loading CLIP model: {args.model_name}...")
+        try:
+            model = CLIPModel.from_pretrained(args.model_name).to(device)
+            processor = CLIPProcessor.from_pretrained(args.model_name)
+        except Exception as e:
+            print(f"Error loading CLIP model: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # 特徴量抽出
+        features, valid_paths = extract_features(
+            image_paths,
+            model,
+            processor,
+            device,
+            batch_size=args.batch_size,
+            use_detection=args.use_detection,
+            yolo_model_path=yolo_model_path if args.use_detection else None,
+            fallback_to_full_image=args.fallback_to_full_image,
+            crop_margin=args.crop_margin,
+        )
+
+    # 除外されたファイル数を表示
+    skipped_count = len(image_paths) - len(valid_paths)
+    if skipped_count > 0:
+        print(f"Skipped {skipped_count} images (face detection failed or invalid).")
 
     if len(valid_paths) == 0:
         print("No features extracted.", file=sys.stderr)
         sys.exit(1)
 
-    # HDBSCANによるクラスタリングの実行
+    # クラスタリングの実行
     features_numpy = features.numpy()
-    print(f"Clustering {len(valid_paths)} images using HDBSCAN...")
+    print(f"Clustering {len(valid_paths)} images using agglomerative...")
     try:
-        clusterer = HDBSCAN(
-            min_cluster_size=args.min_cluster_size,
-            min_samples=args.min_samples,
+        clusterer = AgglomerativeClustering(
+            n_clusters=None,
             metric="cosine",
+            linkage="complete",
+            distance_threshold=args.distance_threshold,
         )
         labels_numpy = clusterer.fit_predict(features_numpy)
         labels = torch.tensor(labels_numpy, dtype=torch.long)
     except Exception as e:
-        print(f"Error during HDBSCAN clustering: {e}", file=sys.stderr)
+        print(f"Error during clustering: {e}", file=sys.stderr)
         sys.exit(1)
 
     # コピーまたは移動処理

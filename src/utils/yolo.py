@@ -32,7 +32,12 @@ def download_yolo_model(dest_path: Path) -> Path:
     return dest_path
 
 
-def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image:
+def detect_and_crop_character(
+    image_path: Path,
+    model_path: Path,
+    fallback_to_full_image: bool = True,
+    margin: float = 0.2,
+) -> Image.Image:
     """
     YOLOv8を用いて画像から顔領域（またはオブジェクト等）を検出し、
     最大のバウンディングボックスをクロップした画像を返す。
@@ -41,10 +46,10 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
         model = YOLO(str(model_path))
         results = model(str(image_path), verbose=False)
 
-        img = Image.open(image_path).convert("RGB")
-
         if not results or len(results[0].boxes) == 0:
-            return img
+            if fallback_to_full_image:
+                return Image.open(image_path).convert("RGB")
+            return None
 
         max_area = 0.0
         best_box = None
@@ -59,15 +64,16 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
                 best_box = xyxy
 
         if best_box:
+            img = Image.open(image_path).convert("RGB")
             xmin, ymin, xmax, ymax = best_box
             width, height = img.size
 
             w = xmax - xmin
             h = ymax - ymin
 
-            # マージン（20%）を追加してクロップ範囲を広げる
-            margin_x = w * 0.2
-            margin_y = h * 0.2
+            # マージンを追加してクロップ範囲を設定する（負の値も許容）
+            margin_x = w * margin
+            margin_y = h * margin
 
             xmin = max(0, int(xmin - margin_x))
             ymin = max(0, int(ymin - margin_y))
@@ -77,13 +83,17 @@ def detect_and_crop_character(image_path: Path, model_path: Path) -> Image.Image
             cropped_img = img.crop((xmin, ymin, xmax, ymax))
             return cropped_img
 
-        return img
+        if fallback_to_full_image:
+            return Image.open(image_path).convert("RGB")
+        return None
     except Exception as e:
         print(
             f"キャラクター検出中にエラーが発生しました ({image_path.name}): {e}",
             file=sys.stderr,
         )
-        try:
-            return Image.open(image_path).convert("RGB")
-        except Exception:
-            raise e
+        if fallback_to_full_image:
+            try:
+                return Image.open(image_path).convert("RGB")
+            except Exception:
+                raise e
+        return None

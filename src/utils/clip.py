@@ -22,10 +22,14 @@ class ImageDataset(Dataset):
         image_paths: List[Path],
         use_detection: bool = False,
         yolo_model_path: Path = None,
+        fallback_to_full_image: bool = True,
+        crop_margin: float = 0.2,
     ):
         self.image_paths = image_paths
         self.use_detection = use_detection
         self.yolo_model_path = yolo_model_path
+        self.fallback_to_full_image = fallback_to_full_image
+        self.crop_margin = crop_margin
 
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -34,7 +38,12 @@ class ImageDataset(Dataset):
         path = self.image_paths[idx]
         try:
             if self.use_detection and self.yolo_model_path:
-                image = detect_and_crop_character(path, self.yolo_model_path)
+                image = detect_and_crop_character(
+                    path,
+                    self.yolo_model_path,
+                    fallback_to_full_image=self.fallback_to_full_image,
+                    margin=self.crop_margin,
+                )
             else:
                 image = Image.open(path).convert("RGB")
             return image, str(path)
@@ -67,11 +76,19 @@ def extract_features(
     batch_size: int = 64,
     use_detection: bool = False,
     yolo_model_path: Path = None,
+    fallback_to_full_image: bool = True,
+    crop_margin: float = 0.2,
 ) -> Tuple[torch.Tensor, List[str]]:
     """
     CLIPを用いて画像群の特徴量を一括抽出する。
     """
-    dataset = ImageDataset(image_paths, use_detection, yolo_model_path)
+    dataset = ImageDataset(
+        image_paths,
+        use_detection,
+        yolo_model_path,
+        fallback_to_full_image=fallback_to_full_image,
+        crop_margin=crop_margin,
+    )
 
     def custom_collate(batch):
         return collate_fn_with_processor(batch, processor)
