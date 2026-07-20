@@ -2,11 +2,16 @@
 X（旧Twitter）のブックマークから画像を一括ダウンロードするスクリプト
 """
 
+import sys
+from pathlib import Path
+
+# sys.pathに親ディレクトリ（src）を追加し単体実行に対応
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import os
-from pathlib import Path
 import threading
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 

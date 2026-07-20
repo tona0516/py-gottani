@@ -1,8 +1,13 @@
 import os
+import sys
 import csv
 import argparse
 import datetime
 from pathlib import Path
+
+# sys.pathに親ディレクトリ（src）を追加し単体実行に対応
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 import cv2
 
 # 対象とする動画ファイルの拡張子一覧（大文字小文字を区別せず判定するためすべて小文字で定義）

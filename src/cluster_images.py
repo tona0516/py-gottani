@@ -7,13 +7,337 @@ import argparse
 import shutil
 from pathlib import Path
 from typing import List
+
 import torch
 from sklearn.cluster import AgglomerativeClustering
 
-from utils.image import SUPPORTED_EXTENSIONS
-from utils.yolo import download_yolo_model
-from utils.clip import extract_features
+import time
+import urllib.request
+from typing import List, Tuple, Any
+
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+from facenet_pytorch import InceptionResnetV1
+from ultralytics import YOLO
 from transformers import CLIPProcessor, CLIPModel
+
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def download_yolo_model(dest_path: Path) -> Path:
+    """
+    顔検出用のYOLOv8モデルをHugging Faceからダウンロードする。
+    """
+    if dest_path.exists():
+        return dest_path
+
+    model_name = dest_path.name
+    url = f"https://huggingface.co/Bingsu/adetailer/resolve/main/{model_name}"
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"YOLOモデルをダウンロード中: {url}...")
+    try:
+        urllib.request.urlretrieve(url, dest_path)
+        print(f"モデルのダウンロードが完了しました: {dest_path}")
+    except Exception as e:
+        print(f"モデルのダウンロード中にエラーが発生しました: {e}", file=sys.stderr)
+        raise e
+    return dest_path
+
+
+def detect_and_crop_character(
+    image_path: Path,
+    model_path: Path,
+    fallback_to_full_image: bool = True,
+    margin: float = 0.2,
+) -> Image.Image:
+    """
+    YOLOv8を用いて画像から顔領域を検出し、最大のバウンディングボックスをクロップした画像を返す。
+    """
+    try:
+        model = YOLO(str(model_path))
+        results = model(str(image_path), verbose=False)
+
+        if not results or len(results[0].boxes) == 0:
+            if fallback_to_full_image:
+                return Image.open(image_path).convert("RGB")
+            return None
+
+        max_area = 0.0
+        best_box = None
+
+        for box in results[0].boxes:
+            xyxy = box.xyxy[0].tolist()
+            w = xyxy[2] - xyxy[0]
+            h = xyxy[3] - xyxy[1]
+            area = w * h
+            if area > max_area:
+                max_area = area
+                best_box = xyxy
+
+        if best_box:
+            img = Image.open(image_path).convert("RGB")
+            xmin, ymin, xmax, ymax = best_box
+            width, height = img.size
+
+            w = xmax - xmin
+            h = ymax - ymin
+
+            margin_x = w * margin
+            margin_y = h * margin
+
+            xmin = max(0, int(xmin - margin_x))
+            ymin = max(0, int(ymin - margin_y))
+            xmax = min(width, int(xmax + margin_x))
+            ymax = min(height, int(ymax + margin_y))
+
+            cropped_img = img.crop((xmin, ymin, xmax, ymax))
+            return cropped_img
+
+        if fallback_to_full_image:
+            return Image.open(image_path).convert("RGB")
+        return None
+    except Exception as e:
+        print(
+            f"キャラクター検出中にエラーが発生しました ({image_path.name}): {e}",
+            file=sys.stderr,
+        )
+        if fallback_to_full_image:
+            try:
+                return Image.open(image_path).convert("RGB")
+            except Exception:
+                raise e
+        return None
+
+
+class ImageDataset(Dataset):
+    def __init__(
+        self,
+        image_paths: List[Path],
+        use_detection: bool = False,
+        yolo_model_path: Path = None,
+        fallback_to_full_image: bool = True,
+        crop_margin: float = 0.2,
+    ):
+        self.image_paths = image_paths
+        self.use_detection = use_detection
+        self.yolo_model_path = yolo_model_path
+        self.fallback_to_full_image = fallback_to_full_image
+        self.crop_margin = crop_margin
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> Tuple[Any, str]:
+        path = self.image_paths[idx]
+        try:
+            if self.use_detection and self.yolo_model_path:
+                image = detect_and_crop_character(
+                    path,
+                    self.yolo_model_path,
+                    fallback_to_full_image=self.fallback_to_full_image,
+                    margin=self.crop_margin,
+                )
+            else:
+                image = Image.open(path).convert("RGB")
+            return image, str(path)
+        except Exception as e:
+            print(f"画像の読み込みに失敗しました ({path}): {e}", file=sys.stderr)
+            return None, str(path)
+
+
+def collate_fn_with_processor(
+    batch: List[Tuple[Any, str]], processor: CLIPProcessor
+) -> Tuple[Any, List[str]]:
+    valid_batch = [item for item in batch if item[0] is not None]
+    if len(valid_batch) == 0:
+        return None, []
+    images = [item[0] for item in valid_batch]
+    paths = [item[1] for item in valid_batch]
+
+    inputs = processor(images=images, return_tensors="pt")
+    return inputs, paths
+
+
+def extract_features(
+    image_paths: List[Path],
+    model: CLIPModel,
+    processor: CLIPProcessor,
+    device: torch.device,
+    batch_size: int = 64,
+    use_detection: bool = False,
+    yolo_model_path: Path = None,
+    fallback_to_full_image: bool = True,
+    crop_margin: float = 0.2,
+) -> Tuple[torch.Tensor, List[str]]:
+    dataset = ImageDataset(
+        image_paths,
+        use_detection,
+        yolo_model_path,
+        fallback_to_full_image=fallback_to_full_image,
+        crop_margin=crop_margin,
+    )
+
+    def custom_collate(batch):
+        return collate_fn_with_processor(batch, processor)
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=custom_collate,
+    )
+
+    all_features = []
+    valid_paths = []
+
+    total_images = len(image_paths)
+    processed_images = 0
+    start_time = time.time()
+
+    model.eval()
+    with torch.no_grad():
+        for batch_inputs, batch_paths in dataloader:
+            if batch_inputs is None:
+                continue
+
+            pixel_values = batch_inputs["pixel_values"].to(device)
+            outputs = model.get_image_features(pixel_values=pixel_values)
+            image_features = (
+                outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
+            )
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+
+            all_features.append(image_features.cpu())
+            valid_paths.extend(batch_paths)
+
+            processed_images += len(batch_paths)
+            elapsed = time.time() - start_time
+            speed = processed_images / elapsed if elapsed > 0 else 0
+            eta = (total_images - processed_images) / speed if speed > 0 else 0
+
+            print(
+                f"処理済み {processed_images}/{total_images} 画像 ({processed_images/total_images*100:.1f}%) | "
+                f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
+                end="\r",
+            )
+
+    print("\n特徴量抽出が完了しました。")
+
+    if len(all_features) == 0:
+        return torch.empty(0), []
+
+    return torch.cat(all_features, dim=0), valid_paths
+
+
+FACENET_TRANSFORM = transforms.Compose([
+    transforms.Resize((160, 160)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.5, 0.5, 0.5],
+        std=[0.5, 0.5, 0.5]
+    )
+])
+
+
+def load_facenet_model(device: torch.device) -> InceptionResnetV1:
+    try:
+        model = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+        return model
+    except Exception as e:
+        print(f"Facenetモデルのロード中にエラーが発生しました: {e}", file=sys.stderr)
+        raise e
+
+
+def collate_fn_facenet(
+    batch: List[Tuple[Any, str]]
+) -> Tuple[torch.Tensor, List[str]]:
+    valid_batch = [item for item in batch if item[0] is not None]
+    if len(valid_batch) == 0:
+        return None, []
+
+    tensors = []
+    paths = []
+    for img, path in valid_batch:
+        try:
+            tensor = FACENET_TRANSFORM(img)
+            tensors.append(tensor)
+            paths.append(path)
+        except Exception as e:
+            print(f"画像の前処理に失敗しました ({path}): {e}", file=sys.stderr)
+
+    if len(tensors) == 0:
+        return None, []
+
+    inputs = torch.stack(tensors)
+    return inputs, paths
+
+
+def extract_facenet_features(
+    image_paths: List[Path],
+    model: InceptionResnetV1,
+    device: torch.device,
+    batch_size: int = 64,
+    use_detection: bool = False,
+    yolo_model_path: Path = None,
+    fallback_to_full_image: bool = True,
+    crop_margin: float = 0.2,
+) -> Tuple[torch.Tensor, List[str]]:
+    dataset = ImageDataset(
+        image_paths,
+        use_detection=use_detection,
+        yolo_model_path=yolo_model_path,
+        fallback_to_full_image=fallback_to_full_image,
+        crop_margin=crop_margin,
+    )
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_fn_facenet,
+    )
+
+    all_features = []
+    valid_paths = []
+
+    total_images = len(image_paths)
+    processed_images = 0
+    start_time = time.time()
+
+    model.eval()
+    with torch.no_grad():
+        for batch_inputs, batch_paths in dataloader:
+            if batch_inputs is None:
+                continue
+
+            batch_inputs = batch_inputs.to(device)
+            outputs = model(batch_inputs)
+            image_features = outputs / outputs.norm(dim=-1, keepdim=True)
+
+            all_features.append(image_features.cpu())
+            valid_paths.extend(batch_paths)
+
+            processed_images += len(batch_paths)
+            elapsed = time.time() - start_time
+            speed = processed_images / elapsed if elapsed > 0 else 0
+            eta = (total_images - processed_images) / speed if speed > 0 else 0
+
+            print(
+                f"処理済み {processed_images}/{total_images} 画像 ({processed_images/total_images*100:.1f}%) | "
+                f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
+                end="\r",
+            )
+
+    print("\n特徴量抽出が完了しました。")
+
+    if len(all_features) == 0:
+        return torch.empty(0), []
+
+    return torch.cat(all_features, dim=0), valid_paths
 
 
 def save_clustered_images(
@@ -243,9 +567,7 @@ def main() -> None:
                 print("Facenet requires face detection. Falling back to CLIP feature extraction.", file=sys.stderr)
                 args.feature_type = "clip"
 
-    # モデルのロードと特徴量抽出
-    if args.feature_type == "facenet":
-        from utils.facenet import load_facenet_model, extract_facenet_features
+
         print("Loading Facenet model...")
         try:
             model = load_facenet_model(device)
