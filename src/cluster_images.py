@@ -13,7 +13,7 @@ from sklearn.cluster import AgglomerativeClustering
 
 import time
 import urllib.request
-from typing import List, Tuple, Any
+from typing import Tuple, Any
 
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
@@ -219,7 +219,7 @@ def extract_features(
             eta = (total_images - processed_images) / speed if speed > 0 else 0
 
             print(
-                f"処理済み {processed_images}/{total_images} 画像 ({processed_images/total_images*100:.1f}%) | "
+                f"処理済み {processed_images}/{total_images} 画像 ({processed_images / total_images * 100:.1f}%) | "
                 f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
                 end="\r",
             )
@@ -232,14 +232,13 @@ def extract_features(
     return torch.cat(all_features, dim=0), valid_paths
 
 
-FACENET_TRANSFORM = transforms.Compose([
-    transforms.Resize((160, 160)),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.5, 0.5, 0.5],
-        std=[0.5, 0.5, 0.5]
-    )
-])
+FACENET_TRANSFORM = transforms.Compose(
+    [
+        transforms.Resize((160, 160)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    ]
+)
 
 
 def load_facenet_model(device: torch.device) -> InceptionResnetV1:
@@ -251,9 +250,7 @@ def load_facenet_model(device: torch.device) -> InceptionResnetV1:
         raise e
 
 
-def collate_fn_facenet(
-    batch: List[Tuple[Any, str]]
-) -> Tuple[torch.Tensor, List[str]]:
+def collate_fn_facenet(batch: List[Tuple[Any, str]]) -> Tuple[torch.Tensor, List[str]]:
     valid_batch = [item for item in batch if item[0] is not None]
     if len(valid_batch) == 0:
         return None, []
@@ -327,7 +324,7 @@ def extract_facenet_features(
             eta = (total_images - processed_images) / speed if speed > 0 else 0
 
             print(
-                f"処理済み {processed_images}/{total_images} 画像 ({processed_images/total_images*100:.1f}%) | "
+                f"処理済み {processed_images}/{total_images} 画像 ({processed_images / total_images * 100:.1f}%) | "
                 f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
                 end="\r",
             )
@@ -432,8 +429,12 @@ def main() -> None:
 
     # グループ定義
     io_group = parser.add_argument_group("基本設定 (Input/Output & General Settings)")
-    feature_group = parser.add_argument_group("顔検出・特徴量抽出設定 (Feature Extraction & Face Detection)")
-    cluster_group = parser.add_argument_group("クラスタリング設定 (Clustering Settings)")
+    feature_group = parser.add_argument_group(
+        "顔検出・特徴量抽出設定 (Feature Extraction & Face Detection)"
+    )
+    cluster_group = parser.add_argument_group(
+        "クラスタリング設定 (Clustering Settings)"
+    )
 
     # 基本設定 (IO)
     io_group.add_argument(
@@ -549,7 +550,10 @@ def main() -> None:
     print(f"Using device: {device}")
 
     if args.feature_type == "facenet" and not args.use_detection:
-        print("Warning: Facenet requires face detection. Forcing --use-detection to True.", file=sys.stderr)
+        print(
+            "Warning: Facenet requires face detection. Forcing --use-detection to True.",
+            file=sys.stderr,
+        )
         args.use_detection = True
 
     # YOLOモデルの準備
@@ -564,9 +568,11 @@ def main() -> None:
             )
             args.use_detection = False
             if args.feature_type == "facenet":
-                print("Facenet requires face detection. Falling back to CLIP feature extraction.", file=sys.stderr)
+                print(
+                    "Facenet requires face detection. Falling back to CLIP feature extraction.",
+                    file=sys.stderr,
+                )
                 args.feature_type = "clip"
-
 
         print("Loading Facenet model...")
         try:

@@ -2,7 +2,6 @@
 X（旧Twitter）のブックマークから画像や動画を一括ダウンロードするスクリプト
 """
 
-import sys
 from pathlib import Path
 import argparse
 import asyncio
@@ -18,7 +17,7 @@ import requests
 from playwright.async_api import async_playwright
 
 
-# ===== 設定（必要に応じて変更してください） ===== 
+# ===== 設定（必要に応じて変更してください） =====
 AUTH_FILE = "auth.json"  # ログイン情報の保存先
 COOKIES_TXT = "cookies.txt"  # yt-dlp用一時クッキーファイル
 SAVE_DIR = "images"  # 保存先フォルダ（画像・動画共用）
@@ -208,7 +207,11 @@ async def collect_media_urls(page, include_video: bool = False) -> tuple[dict, d
             if include_video:
                 has_video = has_video_element or len(video_urls) > 0
                 if has_video:
-                    key = tweet_url if tweet_url else (video_urls[0] if video_urls else None)
+                    key = (
+                        tweet_url
+                        if tweet_url
+                        else (video_urls[0] if video_urls else None)
+                    )
                     if key and key not in collected_videos:
                         collected_videos[key] = {
                             "username": username,
@@ -318,7 +321,9 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
         tweet_url = info["tweet_url"]
         direct_urls = info["direct_urls"]
 
-        safe_username = "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "unknown"
+        safe_username = (
+            "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "unknown"
+        )
 
         # 既存ファイルのチェック (ユーザー名を含む動画ファイル)
         tweet_id = tweet_url.split("/")[-1] if tweet_url else quote(key, safe="")
@@ -332,10 +337,13 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
 
         # 1. yt-dlp コマンドが使用可能な場合
         if yt_dlp_cmd and tweet_url:
-            output_template = os.path.join(save_dir, f"@{safe_username}_{tweet_id}.%(ext)s")
+            output_template = os.path.join(
+                save_dir, f"@{safe_username}_{tweet_id}.%(ext)s"
+            )
             cmd = [
                 yt_dlp_cmd,
-                "-o", output_template,
+                "-o",
+                output_template,
                 "--no-mtime",
                 "--quiet",
                 "--no-warnings",
@@ -349,7 +357,9 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
                 with counter_lock:
                     completed_count += 1
                     idx = completed_count
-                print(f"[{idx}/{total}] 動画保存完了 (yt-dlp): @{safe_username}_{tweet_id}")
+                print(
+                    f"[{idx}/{total}] 動画保存完了 (yt-dlp): @{safe_username}_{tweet_id}"
+                )
                 return
             except Exception as e:
                 print(f"yt-dlpでのダウンロード失敗 (フォールバック試行): {e}")
@@ -389,7 +399,9 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
                 f"[{idx}/{total}] 動画スキップ: @{safe_username} (yt-dlp未インストールのため。必要に応じて `pip install yt-dlp` を行ってください)"
             )
         else:
-            print(f"[{idx}/{total}] 動画保存失敗: @{safe_username} ({tweet_url or key})")
+            print(
+                f"[{idx}/{total}] 動画保存失敗: @{safe_username} ({tweet_url or key})"
+            )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for key, info in videos.items():
@@ -425,11 +437,15 @@ async def main():
         finally:
             await browser.close()
 
-        print(f"\n合計 {len(images)} 件の画像を収集しました。ダウンロードを開始します。")
+        print(
+            f"\n合計 {len(images)} 件の画像を収集しました。ダウンロードを開始します。"
+        )
         download_images(images, args.dir, args.workers)
 
         if args.video:
-            print(f"\n合計 {len(videos)} 件の動画を収集しました。ダウンロードを開始します。")
+            print(
+                f"\n合計 {len(videos)} 件の動画を収集しました。ダウンロードを開始します。"
+            )
             download_videos(videos, args.dir, max(1, args.workers // 2))
 
         print(f"\n完了しました！ {args.dir} フォルダを確認してください。")

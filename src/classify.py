@@ -101,7 +101,7 @@ def extract_features(
             eta = (total_images - processed_images) / speed if speed > 0 else 0
 
             print(
-                f"処理済み {processed_images}/{total_images} 画像 ({processed_images/total_images*100:.1f}%) | "
+                f"処理済み {processed_images}/{total_images} 画像 ({processed_images / total_images * 100:.1f}%) | "
                 f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
                 end="\r",
             )
@@ -280,7 +280,7 @@ def train_mode(args: argparse.Namespace) -> None:
         print(f"  Precision: {avg_metrics['precision']:.4f}")
         print(f"  Recall:    {avg_metrics['recall']:.4f}")
         print(f"  F1-Score:  {avg_metrics['f1']:.4f}")
-        print(f"  Total Confusion Matrix (sum of all folds):")
+        print("  Total Confusion Matrix (sum of all folds):")
         print(f"    TP={total_tp}, FP={total_fp}, TN={total_tn}, FN={total_fn}")
 
     # 全データを用いた重心の算出と保存
@@ -438,7 +438,7 @@ def predict_mode(args: argparse.Namespace) -> None:
     print("\n--- Prediction Results ---")
     for r in results[:50]:  # 最大50件表示
         print(
-            f"{Path(r['path']).name}: {r['label']} (Confidence: {r['confidence']*100:.1f}%) | "
+            f"{Path(r['path']).name}: {r['label']} (Confidence: {r['confidence'] * 100:.1f}%) | "
             f"Sim_Illust: {r['sim_illust']:.3f}, Sim_Photo: {r['sim_photo']:.3f}"
         )
 
