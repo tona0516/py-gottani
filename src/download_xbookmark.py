@@ -4,10 +4,6 @@ X（旧Twitter）のブックマークから画像や動画を一括ダウンロ
 
 import sys
 from pathlib import Path
-
-# sys.pathに親ディレクトリ（src）を追加し単体実行に対応
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +18,7 @@ import requests
 from playwright.async_api import async_playwright
 
 
-# ===== 設定（必要に応じて変更してください） =====
+# ===== 設定（必要に応じて変更してください） ===== 
 AUTH_FILE = "auth.json"  # ログイン情報の保存先
 COOKIES_TXT = "cookies.txt"  # yt-dlp用一時クッキーファイル
 SAVE_DIR = "images"  # 保存先フォルダ（画像・動画共用）
