@@ -11,7 +11,6 @@ from typing import List
 import torch
 from sklearn.cluster import AgglomerativeClustering
 
-import time
 import urllib.request
 from typing import Tuple, Any
 
@@ -21,6 +20,9 @@ from torchvision import transforms
 from facenet_pytorch import InceptionResnetV1
 from ultralytics import YOLO
 from transformers import CLIPProcessor, CLIPModel
+
+from tqdm import tqdm
+import torch.nn.functional as F
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -193,13 +195,9 @@ def extract_features(
     all_features = []
     valid_paths = []
 
-    total_images = len(image_paths)
-    processed_images = 0
-    start_time = time.time()
-
     model.eval()
     with torch.no_grad():
-        for batch_inputs, batch_paths in dataloader:
+        for batch_inputs, batch_paths in tqdm(dataloader, desc="CLIP特徴量抽出"):
             if batch_inputs is None:
                 continue
 
@@ -208,23 +206,10 @@ def extract_features(
             image_features = (
                 outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
             )
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            image_features = F.normalize(image_features, dim=-1)
 
             all_features.append(image_features.cpu())
             valid_paths.extend(batch_paths)
-
-            processed_images += len(batch_paths)
-            elapsed = time.time() - start_time
-            speed = processed_images / elapsed if elapsed > 0 else 0
-            eta = (total_images - processed_images) / speed if speed > 0 else 0
-
-            print(
-                f"処理済み {processed_images}/{total_images} 画像 ({processed_images / total_images * 100:.1f}%) | "
-                f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
-                end="\r",
-            )
-
-    print("\n特徴量抽出が完了しました。")
 
     if len(all_features) == 0:
         return torch.empty(0), []
@@ -301,35 +286,18 @@ def extract_facenet_features(
     all_features = []
     valid_paths = []
 
-    total_images = len(image_paths)
-    processed_images = 0
-    start_time = time.time()
-
     model.eval()
     with torch.no_grad():
-        for batch_inputs, batch_paths in dataloader:
+        for batch_inputs, batch_paths in tqdm(dataloader, desc="FaceNet特徴量抽出"):
             if batch_inputs is None:
                 continue
 
             batch_inputs = batch_inputs.to(device)
             outputs = model(batch_inputs)
-            image_features = outputs / outputs.norm(dim=-1, keepdim=True)
+            image_features = F.normalize(outputs, dim=-1)
 
             all_features.append(image_features.cpu())
             valid_paths.extend(batch_paths)
-
-            processed_images += len(batch_paths)
-            elapsed = time.time() - start_time
-            speed = processed_images / elapsed if elapsed > 0 else 0
-            eta = (total_images - processed_images) / speed if speed > 0 else 0
-
-            print(
-                f"処理済み {processed_images}/{total_images} 画像 ({processed_images / total_images * 100:.1f}%) | "
-                f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
-                end="\r",
-            )
-
-    print("\n特徴量抽出が完了しました。")
 
     if len(all_features) == 0:
         return torch.empty(0), []
@@ -556,7 +524,7 @@ def main() -> None:
         )
         args.use_detection = True
 
-    # YOLOモデルの準備
+    # YOLOモデルの準備（use_detection が有効な場合のみ）
     yolo_model_path = Path(args.yolo_model).resolve()
     if args.use_detection:
         try:
@@ -574,6 +542,8 @@ def main() -> None:
                 )
                 args.feature_type = "clip"
 
+    # feature_type に基づいてモデルをロードし特徴量を抽出
+    if args.feature_type == "facenet":
         print("Facenetモデルを読み込み中...")
         try:
             model = load_facenet_model(device)

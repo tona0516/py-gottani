@@ -9,7 +9,7 @@ import os
 import sys
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image
+from PIL import Image, ImageChops
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -17,73 +17,18 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 def detect_trim_box(img: Image.Image, tolerance: int) -> tuple | None:
     """
     画像の余白領域を検出し、トリミング後のバウンディングボックスを返す。
-
-    四隅のピクセル色を背景色として推定し、tolerance の範囲内の色を
-    余白とみなす。コンテンツが存在しない場合は None を返す。
-
-    Args:
-        img: 対象画像
-        tolerance: 背景色との許容差（0〜255）。大きいほど余白として判定しやすくなる。
-
-    Returns:
-        (left, upper, right, lower) のバウンディングボックス、またはNone
     """
-    # RGBAに統一して処理する
-    if img.mode != "RGBA":
-        img_rgba = img.convert("RGBA")
-    else:
-        img_rgba = img
-
-    width, height = img_rgba.size
+    img_rgba = img.convert("RGBA")
+    w, h = img_rgba.size
     pixels = img_rgba.load()
-
-    # 四隅のピクセルから背景色を推定（最頻値を採用）
-    corners = [
-        pixels[0, 0],
-        pixels[width - 1, 0],
-        pixels[0, height - 1],
-        pixels[width - 1, height - 1],
-    ]
+    corners = [pixels[0, 0], pixels[w - 1, 0], pixels[0, h - 1], pixels[w - 1, h - 1]]
     bg_color = max(set(corners), key=corners.count)
 
-    def is_background(pixel: tuple) -> bool:
-        """ピクセルが背景色かどうかを判定する。"""
-        return all(abs(int(pixel[c]) - int(bg_color[c])) <= tolerance for c in range(3))
-
-    # 上辺のトリミング位置を探索
-    top = 0
-    for y in range(height):
-        if not all(is_background(pixels[x, y]) for x in range(width)):
-            top = y
-            break
-    else:
-        return None  # 全ピクセルが背景色 → トリミング不要（空白画像）
-
-    # 下辺のトリミング位置を探索
-    bottom = height
-    for y in range(height - 1, -1, -1):
-        if not all(is_background(pixels[x, y]) for x in range(width)):
-            bottom = y + 1
-            break
-
-    # 左辺のトリミング位置を探索
-    left = 0
-    for x in range(width):
-        if not all(is_background(pixels[x, y]) for y in range(height)):
-            left = x
-            break
-
-    # 右辺のトリミング位置を探索
-    right = width
-    for x in range(width - 1, -1, -1):
-        if not all(is_background(pixels[x, y]) for y in range(height)):
-            right = x + 1
-            break
-
-    if left >= right or top >= bottom:
-        return None
-
-    return (left, top, right, bottom)
+    bg_img = Image.new("RGBA", (w, h), bg_color)
+    diff = ImageChops.difference(img_rgba, bg_img)
+    if tolerance > 0:
+        diff = diff.point(lambda p: 255 if p > tolerance else 0)
+    return diff.getbbox()
 
 
 def trim_image(
@@ -134,7 +79,9 @@ def trim_image(
             elif trimmed.mode != original_mode:
                 trimmed = trimmed.convert(original_mode)
 
-            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            output_dir_path = os.path.dirname(os.path.abspath(output_path))
+            if output_dir_path:
+                os.makedirs(output_dir_path, exist_ok=True)
             trimmed.save(output_path)
 
         reduction_w = original_size[0] - (right - left)

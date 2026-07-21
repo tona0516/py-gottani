@@ -4,6 +4,7 @@ import argparse
 import datetime
 from pathlib import Path
 import cv2
+from tqdm import tqdm
 
 # 対象とする動画ファイルの拡張子一覧（大文字小文字を区別せず判定するためすべて小文字で定義）
 VIDEO_EXTENSIONS = {
@@ -60,7 +61,7 @@ def get_video_metadata(file_path):
 
         # 長さ（秒）の計算
         duration = 0.0
-        if fps > 0:
+        if fps > 0 and frame_count > 0:
             duration = frame_count / fps
             metadata["duration"] = duration
 
@@ -118,59 +119,39 @@ def find_video_files(directory_path):
 
 
 def collect_video_info(video_files):
-    """動画ファイルの一覧から情報を収集します。
-
-    Args:
-        video_files (list): 動画ファイルの Path オブジェクトのリスト。
-
-    Returns:
-        list: 各動画ファイルの情報（辞書形式）のリスト。
-    """
+    """動画ファイルの一覧から情報を収集します。"""
     results = []
-    total_files = len(video_files)
-
-    for index, path in enumerate(video_files, 1):
-        filename = path.name
+    for path in tqdm(video_files, desc="動画情報抽出中"):
         full_path = str(path.resolve())
-
-        # 進捗を表示
-        print(f"[{index}/{total_files}] 処理中: {filename}")
-
         meta = get_video_metadata(full_path)
 
-        if meta["width"] is not None and meta["height"] is not None:
-            resolution_str = f"{meta['width']}x{meta['height']}"
-            total_resolution = meta["width"] * meta["height"]
-        else:
-            resolution_str = ""
-            total_resolution = ""
-
-        if meta["fps"] is not None and meta["fps"] > 0:
-            fps_str = f"{meta['fps']:.2f}"
-        else:
-            fps_str = ""
-
-        if meta["duration"] is not None:
-            # hh:mm:ss 形式に変換
-            duration_sec = int(meta["duration"])
-            duration_str = str(datetime.timedelta(seconds=duration_sec))
-        else:
-            duration_str = ""
-
-        if meta["bitrate_kbps"] is not None:
-            bitrate_val = int(round(meta["bitrate_kbps"]))
-        else:
-            bitrate_val = ""
+        res_str = (
+            f"{meta['width']}x{meta['height']}"
+            if meta["width"] and meta["height"]
+            else ""
+        )
+        total_res = (
+            meta["width"] * meta["height"] if meta["width"] and meta["height"] else ""
+        )
+        fps_str = f"{meta['fps']:.2f}" if meta["fps"] and meta["fps"] > 0 else ""
+        dur_str = (
+            str(datetime.timedelta(seconds=int(meta["duration"])))
+            if meta["duration"] is not None
+            else ""
+        )
+        bitrate_val = (
+            int(round(meta["bitrate_kbps"])) if meta["bitrate_kbps"] is not None else ""
+        )
 
         results.append(
             {
-                "ファイル名": filename,
+                "ファイル名": path.name,
                 "フルパス": full_path,
-                "解像度(横×縦)": resolution_str,
-                "合計解像度": total_resolution,
+                "解像度(横×縦)": res_str,
+                "合計解像度": total_res,
                 "フレーム率": fps_str,
                 "総ビットレート (kbps)": bitrate_val,
-                "長さ": duration_str,
+                "長さ": dur_str,
             }
         )
 

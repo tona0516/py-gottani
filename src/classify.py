@@ -5,13 +5,18 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Tuple, Any
 import torch
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
-import random
 import shutil
-import time
-from torch.utils.data import Dataset
+from tqdm import tqdm
+from sklearn.model_selection import KFold
+from sklearn.metrics import (
+    accuracy_score,
+    precision_recall_fscore_support,
+    confusion_matrix,
+)
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -75,13 +80,9 @@ def extract_features(
     all_features = []
     valid_paths = []
 
-    total_images = len(image_paths)
-    processed_images = 0
-    start_time = time.time()
-
     model.eval()
     with torch.no_grad():
-        for batch_inputs, batch_paths in dataloader:
+        for batch_inputs, batch_paths in tqdm(dataloader, desc="特徴量抽出"):
             if batch_inputs is None:
                 continue
 
@@ -90,23 +91,10 @@ def extract_features(
             image_features = (
                 outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
             )
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            image_features = F.normalize(image_features, dim=-1)
 
             all_features.append(image_features.cpu())
             valid_paths.extend(batch_paths)
-
-            processed_images += len(batch_paths)
-            elapsed = time.time() - start_time
-            speed = processed_images / elapsed if elapsed > 0 else 0
-            eta = (total_images - processed_images) / speed if speed > 0 else 0
-
-            print(
-                f"処理済み {processed_images}/{total_images} 画像 ({processed_images / total_images * 100:.1f}%) | "
-                f"速度: {speed:.1f} img/s | 残り: {eta:.1f}s",
-                end="\r",
-            )
-
-    print("\n特徴量抽出が完了しました。")
 
     if len(all_features) == 0:
         return torch.empty(0), []
@@ -115,50 +103,36 @@ def extract_features(
 
 
 def evaluate_centroids(
-    train_features_illust: torch.Tensor,
-    train_features_photo: torch.Tensor,
-    val_features_illust: torch.Tensor,
-    val_features_photo: torch.Tensor,
+    train_illust: torch.Tensor,
+    train_photo: torch.Tensor,
+    val_illust: torch.Tensor,
+    val_photo: torch.Tensor,
 ) -> Dict[str, float]:
+    c_illust = F.normalize(train_illust.mean(dim=0), dim=-1)
+    c_photo = F.normalize(train_photo.mean(dim=0), dim=-1)
 
-    # 重心（重心ベクトル）を算出し、正規化する
-    c_illust = train_features_illust.mean(dim=0)
-    c_illust = c_illust / c_illust.norm(dim=-1, keepdim=True)
+    val_all = torch.cat([val_illust, val_photo], dim=0)
+    y_true = [1] * len(val_illust) + [0] * len(val_photo)
 
-    c_photo = train_features_photo.mean(dim=0)
-    c_photo = c_photo / c_photo.norm(dim=-1, keepdim=True)
+    sim_illust = torch.matmul(val_all, c_illust)
+    sim_photo = torch.matmul(val_all, c_photo)
+    y_pred = (sim_illust > sim_photo).int().tolist()
 
-    # illust検証データの予測
-    sim_illust_to_illust = torch.matmul(val_features_illust, c_illust)
-    sim_illust_to_photo = torch.matmul(val_features_illust, c_photo)
-    pred_illust_is_illust = sim_illust_to_illust > sim_illust_to_photo
-    tp = pred_illust_is_illust.sum().item()  # 正しくイラストと判定
-    fn = (~pred_illust_is_illust).sum().item()  # イラストなのに写真と判定
-
-    # photo検証データの予測
-    sim_photo_to_illust = torch.matmul(val_features_photo, c_illust)
-    sim_photo_to_photo = torch.matmul(val_features_photo, c_photo)
-    pred_photo_is_photo = sim_photo_to_photo > sim_photo_to_illust
-    tn = pred_photo_is_photo.sum().item()  # 正しく写真と判定
-    fp = (~pred_photo_is_photo).sum().item()  # 写真なのにイラストと判定
-
-    total = tp + tn + fp + fn
-    accuracy = (tp + tn) / total if total > 0 else 0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1 = (
-        2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    acc = accuracy_score(y_true, y_pred)
+    prec, rec, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, average="binary", zero_division=0
     )
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
 
     return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
         "f1": f1,
-        "tp": tp,
-        "fp": fp,
-        "tn": tn,
-        "fn": fn,
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
     }
 
 
@@ -168,59 +142,28 @@ def k_fold_cross_validation(
     n_splits: int = 5,
     seed: int = 42,
 ) -> List[Dict[str, Any]]:
-    random.seed(seed)
-    torch.manual_seed(seed)
-
-    num_illust = len(features_illust)
-    num_photo = len(features_photo)
-
-    indices_illust = list(range(num_illust))
-    indices_photo = list(range(num_photo))
-    random.shuffle(indices_illust)
-    random.shuffle(indices_photo)
-
-    fold_size_illust = num_illust // n_splits
-    fold_size_photo = num_photo // n_splits
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    splits_illust = list(kf.split(features_illust))
+    splits_photo = list(kf.split(features_photo))
 
     fold_metrics = []
-
-    for fold in range(n_splits):
-        val_start_illust = fold * fold_size_illust
-        val_end_illust = (
-            (fold + 1) * fold_size_illust if fold < n_splits - 1 else num_illust
-        )
-
-        val_start_photo = fold * fold_size_photo
-        val_end_photo = (
-            (fold + 1) * fold_size_photo if fold < n_splits - 1 else num_photo
-        )
-
-        val_idx_illust = indices_illust[val_start_illust:val_end_illust]
-        val_idx_photo = indices_photo[val_start_photo:val_end_photo]
-
-        train_idx_illust = (
-            indices_illust[:val_start_illust] + indices_illust[val_end_illust:]
-        )
-        train_idx_photo = (
-            indices_photo[:val_start_photo] + indices_photo[val_end_photo:]
-        )
-
-        train_feat_illust = features_illust[train_idx_illust]
-        train_feat_photo = features_photo[train_idx_photo]
-
-        val_feat_illust = features_illust[val_idx_illust]
-        val_feat_photo = features_photo[val_idx_photo]
-
+    for (tr_i, val_i), (tr_p, val_p) in zip(splits_illust, splits_photo):
         metrics = evaluate_centroids(
-            train_feat_illust, train_feat_photo, val_feat_illust, val_feat_photo
+            features_illust[tr_i],
+            features_photo[tr_p],
+            features_illust[val_i],
+            features_photo[val_p],
         )
         fold_metrics.append(metrics)
-
     return fold_metrics
 
 
 def train_mode(args: argparse.Namespace) -> None:
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
     print(f"使用デバイス: {device}")
 
     model_name = args.model_name
@@ -288,11 +231,8 @@ def train_mode(args: argparse.Namespace) -> None:
 
     # 全データを用いた重心の算出と保存
     print("\n全画像を使用して最終的な重心を算出中...")
-    c_illust = feat_illust.mean(dim=0)
-    c_illust = c_illust / c_illust.norm(dim=-1, keepdim=True)
-
-    c_photo = feat_photo.mean(dim=0)
-    c_photo = c_photo / c_photo.norm(dim=-1, keepdim=True)
+    c_illust = F.normalize(feat_illust.mean(dim=0), dim=-1)
+    c_photo = F.normalize(feat_photo.mean(dim=0), dim=-1)
 
     model_data = {"illust_manga": c_illust, "photo": c_photo, "model_name": model_name}
 
@@ -351,12 +291,16 @@ def predict_mode(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"{args.model} から重心を読み込み中...")
-    model_data = torch.load(args.model, map_location="cpu")
+    model_data = torch.load(args.model, map_location="cpu", weights_only=True)
     c_illust = model_data["illust_manga"]
     c_photo = model_data["photo"]
     model_name = model_data["model_name"]
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
     print(f"使用デバイス: {device} (CLIP: {model_name})")
 
     model = CLIPModel.from_pretrained(model_name).to(device)
@@ -410,14 +354,16 @@ def predict_mode(args: argparse.Namespace) -> None:
     temperature = 20.0
 
     with torch.no_grad():
-        for batch_inputs, batch_paths in dataloader:
+        for batch_inputs, batch_paths in tqdm(dataloader, desc="予測処理中"):
             if batch_inputs is None:
                 continue
 
             pixel_values = batch_inputs["pixel_values"].to(device)
             outputs = model.get_image_features(pixel_values=pixel_values)
-            image_features = outputs.pooler_output
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            image_features = (
+                outputs.pooler_output if hasattr(outputs, "pooler_output") else outputs
+            )
+            image_features = F.normalize(image_features, dim=-1)
 
             # 各重心とのコサイン類似度を計算
             sim_illust = torch.matmul(image_features, c_illust)

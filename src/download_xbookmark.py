@@ -6,6 +6,7 @@ from pathlib import Path
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 import shutil
@@ -136,7 +137,11 @@ def to_original_quality(url: str) -> str:
 
 
 def filename_from_url(url: str, username: str) -> str:
-    """画像情報から保存用のファイル名を作る (@アカウント名_URLエンコードされた画像URL.拡張子)"""
+    """画像情報から保存用のファイル名を作る (@アカウント名_ハッシュ.拡張子).
+
+    Windows のパス長制限（260 文字）を考慮し、URLのMD5ハッシュを使って
+    ファイル名が長くなりすぎないようにする。
+    """
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     fmt = query.get("format", ["jpg"])[0]
@@ -146,9 +151,9 @@ def filename_from_url(url: str, username: str) -> str:
     if not safe_username:
         safe_username = "unknown"
 
-    encoded_url = quote(url, safe="")
+    url_hash = hashlib.md5(url.encode()).hexdigest()
 
-    return f"@{safe_username}_{encoded_url}{ext}"
+    return f"@{safe_username}_{url_hash}{ext}"
 
 
 async def get_logged_in_context(playwright):
@@ -248,7 +253,9 @@ def download_images(items: dict, save_dir: str, max_workers: int = 10):
     headers = {"User-Agent": "Mozilla/5.0"}
     items_sorted = sorted(items.items(), key=lambda x: x[0])
 
-    existing_files = os.listdir(save_dir)
+    # スレッドセーフなファイル名セット（レースコンディション防止）
+    existing_files_set = set(os.listdir(save_dir))
+    existing_files_lock = threading.Lock()
 
     completed_count = 0
     counter_lock = threading.Lock()
@@ -258,25 +265,19 @@ def download_images(items: dict, save_dir: str, max_workers: int = 10):
         nonlocal completed_count
         username = info["username"]
 
-        encoded_url = quote(url, safe="")
-        existing_filename = next((f for f in existing_files if encoded_url in f), None)
-
-        if existing_filename:
-            with counter_lock:
-                completed_count += 1
-                idx = completed_count
-            print(f"[{idx}/{total}] スキップ（既存画像URL）: {existing_filename}")
-            return
-
         filename = filename_from_url(url, username)
-        filepath = os.path.join(save_dir, filename)
 
-        if os.path.exists(filepath):
-            with counter_lock:
-                completed_count += 1
-                idx = completed_count
-            print(f"[{idx}/{total}] スキップ（既存ファイル名）: {filename}")
-            return
+        with existing_files_lock:
+            if filename in existing_files_set:
+                with counter_lock:
+                    completed_count += 1
+                    idx = completed_count
+                print(f"[{idx}/{total}] スキップ（既存ファイル）: {filename}")
+                return
+            # ダウンロード予定として先に登録（他スレッドの重複を防ぐ）
+            existing_files_set.add(filename)
+
+        filepath = os.path.join(save_dir, filename)
 
         try:
             resp = requests.get(url, headers=headers, timeout=30)
@@ -288,6 +289,9 @@ def download_images(items: dict, save_dir: str, max_workers: int = 10):
                 idx = completed_count
             print(f"[{idx}/{total}] 画像保存完了: {filename}")
         except Exception as e:
+            # ダウンロード失敗時はセットから除去して再試行可能にする
+            with existing_files_lock:
+                existing_files_set.discard(filename)
             with counter_lock:
                 completed_count += 1
                 idx = completed_count
@@ -306,7 +310,10 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "Mozilla/5.0"}
     yt_dlp_cmd = shutil.which("yt-dlp")
-    existing_files = os.listdir(save_dir)
+
+    # スレッドセーフなファイル名セット（レースコンディション防止）
+    existing_files_set = set(os.listdir(save_dir))
+    existing_files_lock = threading.Lock()
 
     # cookies.txt を書き出し
     cookies_file = export_cookies_txt(AUTH_FILE, COOKIES_TXT)
@@ -325,9 +332,12 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
             "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "unknown"
         )
 
-        # 既存ファイルのチェック (ユーザー名を含む動画ファイル)
+        # 既存ファイルのチェック (ツイートIDを含む動画ファイル)
         tweet_id = tweet_url.split("/")[-1] if tweet_url else quote(key, safe="")
-        existing_match = next((f for f in existing_files if tweet_id in f), None)
+        with existing_files_lock:
+            existing_match = next(
+                (f for f in existing_files_set if tweet_id in f), None
+            )
         if existing_match:
             with counter_lock:
                 completed_count += 1
@@ -360,6 +370,9 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
                 print(
                     f"[{idx}/{total}] 動画保存完了 (yt-dlp): @{safe_username}_{tweet_id}"
                 )
+                # 保存したファイルをセットに追加
+                with existing_files_lock:
+                    existing_files_set.add(f"@{safe_username}_{tweet_id}")
                 return
             except Exception as e:
                 print(f"yt-dlpでのダウンロード失敗 (フォールバック試行): {e}")
@@ -386,6 +399,8 @@ def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
                         completed_count += 1
                         idx = completed_count
                     print(f"[{idx}/{total}] 動画保存完了: {filename}")
+                    with existing_files_lock:
+                        existing_files_set.add(filename)
                     return
                 except Exception as e:
                     print(f"直リンクからの動画保存失敗: {url} ({e})")

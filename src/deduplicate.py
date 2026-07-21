@@ -8,7 +8,11 @@ import argparse
 import shutil
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image
+import imagehash
+from PIL import Image, ImageChops, ImageStat
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
+from tqdm import tqdm
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -28,22 +32,8 @@ def calculate_dhash(img: Image.Image, hash_size: int = 8) -> int:
     """
     try:
         img = convert_palette_to_rgba_if_needed(img)
-        img_resized = img.convert("L").resize(
-            (hash_size + 1, hash_size), Image.Resampling.BILINEAR
-        )
-        pixels = list(img_resized.tobytes())
-
-        difference = []
-        for row in range(hash_size):
-            for col in range(hash_size):
-                pixel_left = pixels[row * (hash_size + 1) + col]
-                pixel_right = pixels[row * (hash_size + 1) + col + 1]
-                difference.append(pixel_left > pixel_right)
-
-        decimal_value = 0
-        for bit in difference:
-            decimal_value = (decimal_value << 1) | bit
-        return decimal_value
+        h = imagehash.dhash(img, hash_size=hash_size)
+        return int(str(h), 16)
     except Exception as e:
         print(f"dHash計算中にエラーが発生しました: {e}", file=sys.stderr)
         return None
@@ -53,34 +43,20 @@ def hamming_distance(hash1: int, hash2: int) -> int:
     """
     2つのハッシュ値のハミング距離（異なるビット数）を計算する。
     """
-    return bin(hash1 ^ hash2).count("1")
+    return (hash1 ^ hash2).bit_count()
 
 
 def compare_color_histograms(img1: Image.Image, img2: Image.Image) -> float:
     """
     Pillowのhistogram()を用いて、2つの画像の正規化ヒストグラム交差（Histogram Intersection）を計算する。
-    値は 0.0（全く異なる）から 1.0（完全に一致）の間になる。
     """
     try:
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1 = img1.convert("RGB")
-        img2 = img2.convert("RGB")
-
+        img1 = convert_palette_to_rgba_if_needed(img1).convert("RGB")
+        img2 = convert_palette_to_rgba_if_needed(img2).convert("RGB")
         hist1 = img1.histogram()
         hist2 = img2.histogram()
-
-        # 各チャンネル（R, G, B）のピクセル数で割って正規化
-        total1 = img1.width * img1.height
-        total2 = img2.width * img2.height
-
-        # ピクセル数で正規化したヒストグラムの交差を計算
-        intersection = 0.0
-        for h1, h2 in zip(hist1, hist2):
-            intersection += min(h1 / total1, h2 / total2)
-
-        # 3チャンネル合計なので、3.0で割って 0.0 - 1.0 の範囲にする
-        return intersection / 3.0
+        total1, total2 = img1.width * img1.height, img2.width * img2.height
+        return sum(min(h1 / total1, h2 / total2) for h1, h2 in zip(hist1, hist2)) / 3.0
     except Exception as e:
         print(f"ヒストグラム比較中にエラーが発生しました: {e}", file=sys.stderr)
         return 0.0
@@ -91,23 +67,11 @@ def compare_pixel_difference(
 ) -> float:
     """
     2つの画像を中解像度のグレースケールに縮小し、ピクセル間の平均絶対誤差（MAE）を計算する。
-    値は 0.0 から 255.0 の間になり、0.0 に近いほどピクセルレベルで同一。
     """
     try:
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-        img2_gray = img2.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-
-        bytes1 = img1_gray.tobytes()
-        bytes2 = img2_gray.tobytes()
-
-        total_diff = 0
-        for b1, b2 in zip(bytes1, bytes2):
-            total_diff += abs(b1 - b2)
-
-        mae = total_diff / (size * size)
-        return mae
+        g1 = convert_palette_to_rgba_if_needed(img1).convert("L").resize((size, size))
+        g2 = convert_palette_to_rgba_if_needed(img2).convert("L").resize((size, size))
+        return float(ImageStat.Stat(ImageChops.difference(g1, g2)).mean[0])
     except Exception as e:
         print(f"ピクセル差分比較中にエラーが発生しました: {e}", file=sys.stderr)
         return 255.0
@@ -123,50 +87,20 @@ class ImageInfo:
     size: int
 
 
-class UnionFind:
-    def __init__(self, n):
-        self.parent = list(range(n))
-
-    def find(self, i):
-        if self.parent[i] == i:
-            return i
-        self.parent[i] = self.find(self.parent[i])
-        return self.parent[i]
-
-    def union(self, i, j):
-        root_i = self.find(i)
-        root_j = self.find(j)
-        if root_i != root_j:
-            self.parent[root_i] = root_j
-            return True
-        return False
-
-
 def analyze_pixel_differences(img1, img2, size=128, diff_threshold=15):
     """
     2つの画像を中解像度のグレースケールに縮小し、ピクセル間の差分を分析する。
-    (MAE, 閾値を超える差分ピクセル数, 差分ピクセルの割合) を返す。
     """
     try:
-        mae = compare_pixel_difference(img1, img2, size)
+        g1 = convert_palette_to_rgba_if_needed(img1).convert("L").resize((size, size))
+        g2 = convert_palette_to_rgba_if_needed(img2).convert("L").resize((size, size))
+        diff = ImageChops.difference(g1, g2)
+        mae = float(ImageStat.Stat(diff).mean[0])
 
-        img1 = convert_palette_to_rgba_if_needed(img1)
-        img2 = convert_palette_to_rgba_if_needed(img2)
-        img1_gray = img1.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-        img2_gray = img2.convert("L").resize((size, size), Image.Resampling.BILINEAR)
-
-        bytes1 = img1_gray.tobytes()
-        bytes2 = img2_gray.tobytes()
-
-        significant_diff_count = 0
-        total_pixels = size * size
-
-        for b1, b2 in zip(bytes1, bytes2):
-            if abs(b1 - b2) >= diff_threshold:
-                significant_diff_count += 1
-
-        diff_ratio = significant_diff_count / total_pixels
-        return mae, significant_diff_count, diff_ratio
+        sig_mask = diff.point(lambda p: 255 if p >= diff_threshold else 0)
+        hist = sig_mask.histogram()
+        sig_count = hist[255] if len(hist) > 255 else 0
+        return mae, sig_count, sig_count / (size * size)
     except Exception as e:
         print(f"ピクセル差分分析中にエラーが発生しました: {e}", file=sys.stderr)
         return 255.0, size * size, 1.0
@@ -180,34 +114,26 @@ def verify_duplicates_detailed(
     pixel_diff_threshold=15,
     pixel_diff_ratio=0.005,
 ):
-    """
-    2つの画像について、カラーヒストグラムと中解像度ピクセル差分の詳細検証を行う。
-    すべての検証をパスした場合にのみ True を返す。
-    """
     try:
         with Image.open(path1) as img1, Image.open(path2) as img2:
-            # 1. カラーヒストグラムの比較
-            if hist_threshold >= 0:
-                hist_corr = compare_color_histograms(img1, img2)
-                if hist_corr < hist_threshold:
-                    return False
+            if (
+                hist_threshold >= 0
+                and compare_color_histograms(img1, img2) < hist_threshold
+            ):
+                return False
 
-            # 2. 中解像度ピクセル差分の比較と差分割合の検証
             if diff_threshold >= 0 or (
                 pixel_diff_ratio >= 0 and pixel_diff_threshold >= 0
             ):
                 pdt = max(0, pixel_diff_threshold)
-                mae, diff_count, diff_ratio = analyze_pixel_differences(
+                mae, _, diff_ratio = analyze_pixel_differences(
                     img1, img2, diff_threshold=pdt
                 )
                 if diff_threshold >= 0 and mae > diff_threshold:
                     return False
-
-                # 顕著な差分があるピクセル割合がしきい値以上の場合は別画像
                 if pixel_diff_ratio >= 0 and pixel_diff_threshold >= 0:
                     if diff_ratio > pixel_diff_ratio:
                         return False
-
         return True
     except Exception as e:
         print(
@@ -293,7 +219,7 @@ def scan_directory(directory_path, hash_size=16):
             executor.submit(process_single_image, path, file, hash_size)
             for path, file in tasks
         ]
-        for future in futures:
+        for future in tqdm(futures, desc="画像読み込み中"):
             result = future.result()
             if result is not None:
                 image_infos.append(result)
@@ -333,26 +259,33 @@ def find_duplicate_groups(image_infos, threshold, args=None):
     ハミング距離のしきい値に基づいて、重複画像をグループ化する。
     """
     n = len(image_infos)
-    uf = UnionFind(n)
+    total_pairs = n * (n - 1) // 2
+    print(f"画像を比較して重複グループを検出中... (比較ペア数: {total_pairs:,})")
+    if total_pairs > 100_000:
+        print(
+            f"警告: 比較ペア数が {total_pairs:,} 件と多いため、処理に時間がかかる場合があります。",
+            file=sys.stderr,
+        )
 
-    print("画像を比較して重複グループを検出中...")
-    # 総当たりで比較（$O(N^2)$）
-    for i in range(n):
+    row_ind, col_ind = [], []
+    for i in tqdm(range(n), desc="重複ペア探索"):
         for j in range(i + 1, n):
             if should_union(image_infos[i], image_infos[j], threshold, args):
-                uf.union(i, j)
+                row_ind.extend([i, j])
+                col_ind.extend([j, i])
 
-    # グループごとに整理
+    if not row_ind:
+        return []
+
+    data = [1] * len(row_ind)
+    adj = csr_matrix((data, (row_ind, col_ind)), shape=(n, n))
+    _, labels = connected_components(adj, directed=False)
+
     groups = {}
-    for i in range(n):
-        root = uf.find(i)
-        if root not in groups:
-            groups[root] = []
-        groups[root].append(image_infos[i])
+    for idx, label in enumerate(labels):
+        groups.setdefault(label, []).append(image_infos[idx])
 
-    # 画像が2枚以上のグループ（重複画像あり）のみを抽出
-    duplicate_groups = [g for g in groups.values() if len(g) > 1]
-    return duplicate_groups
+    return [g for g in groups.values() if len(g) > 1]
 
 
 def select_best_image(group):
