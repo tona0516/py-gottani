@@ -221,15 +221,15 @@ def k_fold_cross_validation(
 
 def train_mode(args: argparse.Namespace) -> None:
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print(f"使用デバイス: {device}")
 
     model_name = args.model_name
-    print(f"Loading CLIP model: {model_name}...")
+    print(f"CLIPモデルを読み込み中: {model_name}...")
     model = CLIPModel.from_pretrained(model_name).to(device)
     processor = CLIPProcessor.from_pretrained(model_name)
 
     # 画像ファイル収集
-    print("Collecting training images...")
+    print("学習用画像を収集しています...")
     illust_dir = Path(args.images_dir) / "illust_manga"
     photo_dir = Path(args.images_dir) / "photo"
 
@@ -241,27 +241,30 @@ def train_mode(args: argparse.Namespace) -> None:
     ]
 
     print(
-        f"Found {len(illust_paths)} illust_manga images and {len(photo_paths)} photo images."
+        f"イラスト・マンガ画像 {len(illust_paths)} 枚、写真画像 {len(photo_paths)} 枚が見つかりました。"
     )
 
     if len(illust_paths) == 0 or len(photo_paths) == 0:
-        print("Error: No images found. Check your directories.")
+        print(
+            "エラー: 画像が見つかりません。ディレクトリを確認してください。",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # 全ての特徴抽出
-    print("\n--- Extracting features for illust_manga ---")
+    print("\n--- イラスト・マンガの特徴量を抽出中 ---")
     feat_illust, _ = extract_features(
         illust_paths, model, processor, device, args.batch_size
     )
 
-    print("\n--- Extracting features for photo ---")
+    print("\n--- 写真の特徴量を抽出中 ---")
     feat_photo, _ = extract_features(
         photo_paths, model, processor, device, args.batch_size
     )
 
     # 交差検証の実行
     if args.n_splits > 1:
-        print(f"\nEvaluating model using {args.n_splits}-fold cross-validation...")
+        print(f"\n{args.n_splits} 分割交差検証でモデルを評価中...")
         fold_metrics = k_fold_cross_validation(
             feat_illust, feat_photo, n_splits=args.n_splits, seed=args.seed
         )
@@ -275,16 +278,16 @@ def train_mode(args: argparse.Namespace) -> None:
         total_tn = sum(m["tn"] for m in fold_metrics)
         total_fn = sum(m["fn"] for m in fold_metrics)
 
-        print(f"\nCross-Validation Results ({args.n_splits} folds average):")
-        print(f"  Accuracy:  {avg_metrics['accuracy']:.4f}")
-        print(f"  Precision: {avg_metrics['precision']:.4f}")
-        print(f"  Recall:    {avg_metrics['recall']:.4f}")
-        print(f"  F1-Score:  {avg_metrics['f1']:.4f}")
-        print("  Total Confusion Matrix (sum of all folds):")
+        print(f"\n交差検証結果 ({args.n_splits} 分割の平均):")
+        print(f"  正解率 (Accuracy):  {avg_metrics['accuracy']:.4f}")
+        print(f"  適合率 (Precision): {avg_metrics['precision']:.4f}")
+        print(f"  再現率 (Recall):    {avg_metrics['recall']:.4f}")
+        print(f"  F1スコア (F1-Score): {avg_metrics['f1']:.4f}")
+        print("  混同行列の合計 (全分割の総和):")
         print(f"    TP={total_tp}, FP={total_fp}, TN={total_tn}, FN={total_fn}")
 
     # 全データを用いた重心の算出と保存
-    print("\nCalculating final centroids using all images...")
+    print("\n全画像を使用して最終的な重心を算出中...")
     c_illust = feat_illust.mean(dim=0)
     c_illust = c_illust / c_illust.norm(dim=-1, keepdim=True)
 
@@ -294,7 +297,7 @@ def train_mode(args: argparse.Namespace) -> None:
     model_data = {"illust_manga": c_illust, "photo": c_photo, "model_name": model_name}
 
     torch.save(model_data, args.output)
-    print(f"Model saved to {args.output}")
+    print(f"モデルを {args.output} に保存しました。")
 
 
 def move_images(results: List[Dict[str, Any]], dest_root: Path) -> None:
@@ -305,7 +308,7 @@ def move_images(results: List[Dict[str, Any]], dest_root: Path) -> None:
     illust_dir.mkdir(parents=True, exist_ok=True)
     photo_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nMoving images to classification directories under {dest_root}...")
+    print(f"\n{dest_root} 以下の分類用ディレクトリに画像を移動中...")
     moved_count = 0
     for r in results:
         src_path = Path(r["path"])
@@ -331,24 +334,30 @@ def move_images(results: List[Dict[str, Any]], dest_root: Path) -> None:
             shutil.move(str(src_path), str(dst_path))
             moved_count += 1
         except Exception as e:
-            print(f"Error moving {src_path} to {dst_path}: {e}")
+            print(
+                f"エラー: {src_path} から {dst_path} への移動に失敗しました: {e}",
+                file=sys.stderr,
+            )
 
-    print(f"Successfully moved {moved_count}/{len(results)} images.")
+    print(f"画像の移動が完了しました ({moved_count}/{len(results)} 枚)。")
 
 
 def predict_mode(args: argparse.Namespace) -> None:
     if not os.path.exists(args.model):
-        print(f"Error: Model file {args.model} does not exist. Run 'train' mode first.")
+        print(
+            f"エラー: モデルファイル {args.model} が存在しません。先に 'train' モードを実行してください。",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(f"Loading centroids from {args.model}...")
+    print(f"{args.model} から重心を読み込み中...")
     model_data = torch.load(args.model, map_location="cpu")
     c_illust = model_data["illust_manga"]
     c_photo = model_data["photo"]
     model_name = model_data["model_name"]
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Using device: {device} with CLIP: {model_name}")
+    print(f"使用デバイス: {device} (CLIP: {model_name})")
 
     model = CLIPModel.from_pretrained(model_name).to(device)
     processor = CLIPProcessor.from_pretrained(model_name)
@@ -372,10 +381,13 @@ def predict_mode(args: argparse.Namespace) -> None:
         ]
 
     if len(image_paths) == 0:
-        print(f"Error: No valid images found at {args.input}")
+        print(
+            f"エラー: {args.input} に有効な画像が見つかりません。",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    print(f"Found {len(image_paths)} images to predict.")
+    print(f"予測対象の画像が {len(image_paths)} 枚見つかりました。")
 
     # 推論処理
     dataset = ImageDataset(image_paths)
@@ -435,15 +447,15 @@ def predict_mode(args: argparse.Namespace) -> None:
                 )
 
     # 結果の表示
-    print("\n--- Prediction Results ---")
+    print("\n--- 予測結果 ---")
     for r in results[:50]:  # 最大50件表示
         print(
-            f"{Path(r['path']).name}: {r['label']} (Confidence: {r['confidence'] * 100:.1f}%) | "
-            f"Sim_Illust: {r['sim_illust']:.3f}, Sim_Photo: {r['sim_photo']:.3f}"
+            f"{Path(r['path']).name}: {r['label']} (確信度: {r['confidence'] * 100:.1f}%) | "
+            f"イラスト類似度: {r['sim_illust']:.3f}, 写真類似度: {r['sim_photo']:.3f}"
         )
 
     if len(results) > 50:
-        print(f"... and {len(results) - 50} more images.")
+        print(f"... 他 {len(results) - 50} 枚の画像。")
 
     # 結果をテキストやCSVで出力するオプションがあれば便利
     if args.save_results:
@@ -456,7 +468,7 @@ def predict_mode(args: argparse.Namespace) -> None:
                 f.write(
                     f'"{r["path"]}",{r["label"]},{r["confidence"]:.4f},{r["sim_illust"]:.4f},{r["sim_photo"]:.4f}\n'
                 )
-        print(f"Results saved to {output_csv}")
+        print(f"結果を {output_csv} に保存しました。")
 
     # 画像の移動処理
     if args.move_to_dir:

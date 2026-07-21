@@ -463,7 +463,7 @@ def handle_duplicates(duplicate_groups, action, output_dir, args=None):
     print("=" * 50 + "\n")
 
     if dryrun:
-        print("=== DRY RUN MODE: ファイル操作は行われません ===")
+        print("=== ドライランモード: ファイル操作は行われません ===")
 
     if action == "move" and not dryrun:
         os.makedirs(output_dir, exist_ok=True)
@@ -479,7 +479,7 @@ def handle_duplicates(duplicate_groups, action, output_dir, args=None):
         original, redundants = select_best_image(group)
         orig_rel_path = get_display_path(original.path)
 
-        print(f"Group {i}:")
+        print(f"グループ {i}:")
         print(
             f"  [保持] {orig_rel_path} ({original.width}x{original.height}, {original.size / 1024:.1f} KB)"
         )

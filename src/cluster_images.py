@@ -354,8 +354,8 @@ def save_clustered_images(
     unique_labels = torch.unique(labels)
     image_paths_np = [Path(p) for p in image_paths]
 
-    action_label = "Moving" if action == "move" else "Copying"
-    print(f"\n{action_label} clustered images to {output_root}...")
+    action_label = "移動中" if action == "move" else "コピー中"
+    print(f"\nクラスタリングされた画像を {output_root} に{action_label}...")
 
     for k in unique_labels.tolist():
         indices = (labels == k).nonzero(as_tuple=True)[0]
@@ -377,7 +377,7 @@ def save_clustered_images(
             # ノイズの場合は類似度ソートをせず、ファイル名順でソート
             path_sim_pairs = list(zip(cluster_paths, [0.0] * len(cluster_paths)))
             sorted_pairs = sorted(path_sim_pairs, key=lambda x: x[0].name)
-            print(f"Noise (Unclassified): {len(sorted_pairs)} images")
+            print(f"ノイズ (未分類): {len(sorted_pairs)} 枚")
         else:
             # クラスタの平均ベクトル（セントロイド）を計算し、L2正規化
             centroid = cluster_features.mean(dim=0)
@@ -387,7 +387,7 @@ def save_clustered_images(
             similarities = torch.matmul(cluster_features, centroid).tolist()
             path_sim_pairs = list(zip(cluster_paths, similarities))
             sorted_pairs = sorted(path_sim_pairs, key=lambda x: x[1], reverse=True)
-            print(f"Cluster {k:02d}: {len(sorted_pairs)} images")
+            print(f"クラスタ {k:02d}: {len(sorted_pairs)} 枚")
 
         for idx, (src_path, sim) in enumerate(sorted_pairs):
             ext = src_path.suffix
@@ -415,9 +415,9 @@ def save_clustered_images(
                 else:
                     shutil.copy2(src_path, dest_path)
             except Exception as e:
-                err_action = "moving" if action == "move" else "copying"
+                err_action = "移動" if action == "move" else "コピー"
                 print(
-                    f"Error {err_action} {src_path.name} to {dest_path.name}: {e}",
+                    f"エラー: {src_path.name} から {dest_path.name} への{err_action}に失敗しました: {e}",
                     file=sys.stderr,
                 )
 
@@ -517,14 +517,14 @@ def main() -> None:
 
     if not input_dir.exists() or not input_dir.is_dir():
         print(
-            f"Error: Input directory {input_dir} does not exist or is not a directory.",
+            f"エラー: 入力ディレクトリ {input_dir} が存在しないか、ディレクトリではありません。",
             file=sys.stderr,
         )
         sys.exit(1)
 
     if input_dir == output_dir:
         print(
-            "Error: Output directory cannot be the same as the input directory.",
+            "エラー: 出力ディレクトリは入力ディレクトリと同じにすることはできません。",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -536,10 +536,10 @@ def main() -> None:
             image_paths.append(file)
 
     if not image_paths:
-        print(f"No valid images found in {input_dir}.", file=sys.stderr)
+        print(f"エラー: {input_dir} に有効な画像が見つかりません。", file=sys.stderr)
         sys.exit(0)
 
-    print(f"Found {len(image_paths)} images in {input_dir}")
+    print(f"{input_dir} に {len(image_paths)} 枚の画像が見つかりました")
 
     # 最適なデバイスの自動検出
     device = torch.device(
@@ -547,11 +547,11 @@ def main() -> None:
         if torch.cuda.is_available()
         else ("mps" if torch.backends.mps.is_available() else "cpu")
     )
-    print(f"Using device: {device}")
+    print(f"使用デバイス: {device}")
 
     if args.feature_type == "facenet" and not args.use_detection:
         print(
-            "Warning: Facenet requires face detection. Forcing --use-detection to True.",
+            "警告: Facenet には顔検出が必要です。--use-detection を True に設定します。",
             file=sys.stderr,
         )
         args.use_detection = True
@@ -563,22 +563,22 @@ def main() -> None:
             download_yolo_model(yolo_model_path)
         except Exception as e:
             print(
-                f"Failed to prepare YOLO model, falling back to non-detection mode: {e}",
+                f"YOLOモデルの準備に失敗しました。検出なしモードにフォールバックします: {e}",
                 file=sys.stderr,
             )
             args.use_detection = False
             if args.feature_type == "facenet":
                 print(
-                    "Facenet requires face detection. Falling back to CLIP feature extraction.",
+                    "Facenet には顔検出が必要です。CLIP特徴量抽出にフォールバックします。",
                     file=sys.stderr,
                 )
                 args.feature_type = "clip"
 
-        print("Loading Facenet model...")
+        print("Facenetモデルを読み込み中...")
         try:
             model = load_facenet_model(device)
         except Exception as e:
-            print(f"Error loading Facenet model: {e}", file=sys.stderr)
+            print(f"Facenetモデルの読み込みエラー: {e}", file=sys.stderr)
             sys.exit(1)
 
         features, valid_paths = extract_facenet_features(
@@ -593,12 +593,12 @@ def main() -> None:
         )
     else:
         # CLIPモデルのロード
-        print(f"Loading CLIP model: {args.model_name}...")
+        print(f"CLIPモデルを読み込み中: {args.model_name}...")
         try:
             model = CLIPModel.from_pretrained(args.model_name).to(device)
             processor = CLIPProcessor.from_pretrained(args.model_name)
         except Exception as e:
-            print(f"Error loading CLIP model: {e}", file=sys.stderr)
+            print(f"CLIPモデルの読み込みエラー: {e}", file=sys.stderr)
             sys.exit(1)
 
         # 特徴量抽出
@@ -617,15 +617,17 @@ def main() -> None:
     # 除外されたファイル数を表示
     skipped_count = len(image_paths) - len(valid_paths)
     if skipped_count > 0:
-        print(f"Skipped {skipped_count} images (face detection failed or invalid).")
+        print(
+            f"{skipped_count} 枚の画像をスキップしました（顔検出失敗または無効な画像）。"
+        )
 
     if len(valid_paths) == 0:
-        print("No features extracted.", file=sys.stderr)
+        print("特徴量が抽出されませんでした。", file=sys.stderr)
         sys.exit(1)
 
     # クラスタリングの実行
     features_numpy = features.numpy()
-    print(f"Clustering {len(valid_paths)} images using agglomerative...")
+    print(f"階層的クラスタリングで {len(valid_paths)} 枚の画像をクラスタリング中...")
     try:
         clusterer = AgglomerativeClustering(
             n_clusters=None,
@@ -636,7 +638,7 @@ def main() -> None:
         labels_numpy = clusterer.fit_predict(features_numpy)
         labels = torch.tensor(labels_numpy, dtype=torch.long)
     except Exception as e:
-        print(f"Error during clustering: {e}", file=sys.stderr)
+        print(f"クラスタリング中にエラーが発生しました: {e}", file=sys.stderr)
         sys.exit(1)
 
     # コピーまたは移動処理
@@ -649,8 +651,10 @@ def main() -> None:
         action=args.action,
     )
 
-    action_past_verb = "copied" if args.action == "copy" else "moved"
-    print(f"Done. Successfully clustered and {action_past_verb} images to {output_dir}")
+    action_past_verb = "移動" if args.action == "move" else "コピー"
+    print(
+        f"完了。画像を正常にクラスタリングし、{output_dir} に{action_past_verb}しました。"
+    )
 
 
 if __name__ == "__main__":
