@@ -12,6 +12,7 @@ wheels/
 
 # Credential
 auth.json
+cookies.txt
 
 # Output
 images/

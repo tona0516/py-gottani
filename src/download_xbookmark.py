@@ -1,5 +1,5 @@
 """
-X（旧Twitter）のブックマークから画像を一括ダウンロードするスクリプト
+X（旧Twitter）のブックマークから画像や動画を一括ダウンロードするスクリプト
 """
 
 import sys
@@ -11,7 +11,10 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
+import shutil
+import subprocess
 import threading
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, quote
 
@@ -21,23 +24,52 @@ from playwright.async_api import async_playwright
 
 # ===== 設定（必要に応じて変更してください） =====
 AUTH_FILE = "auth.json"  # ログイン情報の保存先
-SAVE_DIR = "images"  # 画像の保存先フォルダ
+COOKIES_TXT = "cookies.txt"  # yt-dlp用一時クッキーファイル
+SAVE_DIR = "images"  # 保存先フォルダ（画像・動画共用）
 X_URL = "https://x.com"
 BOOKMARKS_URL = f"{X_URL}/i/bookmarks"
 MAX_SCROLLS = 1000  # 最大スクロール回数
 SCROLL_WAIT_MS = 1500  # スクロール後の待機時間（ミリ秒）
-NO_NEW_CONTENT_LIMIT = 6  # 新しい画像が見つからない状態がこの回数続いたら終了
+NO_NEW_CONTENT_LIMIT = 6  # 新しいメディアが見つからない状態がこの回数続いたら終了
 
 
-# ブックマークページからツイート情報（ユーザー名と画像URLリスト）を抽出する JavaScript ロジック
+# ブックマークページからツイート情報（ユーザー名、画像URL、動画情報、ツイートURL）を抽出する JavaScript ロジック
 EXTRACT_TWEETS_JS = """articles => {
     let results = [];
     articles.forEach(article => {
         let imgs = article.querySelectorAll("img[src*='pbs.twimg.com/media']");
         let imageUrls = Array.from(imgs).map(img => img.src);
         
-        if (imageUrls.length === 0) return;
-        
+        let videoUrls = [];
+        let videos = article.querySelectorAll("video");
+        videos.forEach(v => {
+            if (v.src && !v.src.startsWith("blob:")) {
+                videoUrls.push(v.src);
+            }
+            let sources = v.querySelectorAll("source");
+            sources.forEach(s => {
+                if (s.src && !s.src.startsWith("blob:")) {
+                    videoUrls.push(s.src);
+                }
+            });
+        });
+
+        // 動画要素がツイート内に存在するかチェック
+        let hasVideoElement = videos.length > 0 ||
+            article.querySelector('[data-testid="videoPlayer"]') !== null ||
+            article.querySelector('[data-testid="videoComponent"]') !== null ||
+            article.querySelector('div[aria-label*="動画"]') !== null ||
+            article.querySelector('div[aria-label*="Video"]') !== null;
+
+        let tweetUrl = null;
+        let timeEl = article.querySelector("time");
+        if (timeEl) {
+            let aEl = timeEl.closest("a");
+            if (aEl && aEl.href) {
+                tweetUrl = aEl.href;
+            }
+        }
+
         let username = 'unknown';
         let userNameEl = article.querySelector('[data-testid="User-Name"]');
         if (userNameEl) {
@@ -52,11 +84,51 @@ EXTRACT_TWEETS_JS = """articles => {
         
         results.push({
             username: username,
-            urls: imageUrls
+            imageUrls: imageUrls,
+            videoUrls: videoUrls,
+            hasVideoElement: hasVideoElement,
+            tweetUrl: tweetUrl
         });
     });
     return results;
 }"""
+
+
+def export_cookies_txt(auth_file: str, output_path: str) -> str | None:
+    """auth.json から Netscape Cookie File 形式の cookies.txt を生成する"""
+    if not os.path.exists(auth_file):
+        return None
+    try:
+        with open(auth_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cookies = data.get("cookies", [])
+        if not cookies:
+            return None
+
+        lines = [
+            "# Netscape HTTP Cookie File",
+            "# http://curl.haxx.se/rfc/cookie_spec.html",
+            "# This is a generated file!  Do not edit.",
+            "",
+        ]
+        for c in cookies:
+            domain = c.get("domain", "")
+            flag = "TRUE" if domain.startswith(".") else "FALSE"
+            path = c.get("path", "/")
+            secure = "TRUE" if c.get("secure", False) else "FALSE"
+            expires = str(int(c.get("expires", 0)))
+            name = c.get("name", "")
+            value = c.get("value", "")
+            lines.append(
+                f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}"
+            )
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return output_path
+    except Exception as e:
+        print(f"cookies.txt の書き出し失敗: {e}")
+        return None
 
 
 def to_original_quality(url: str) -> str:
@@ -70,18 +142,15 @@ def to_original_quality(url: str) -> str:
 
 def filename_from_url(url: str, username: str) -> str:
     """画像情報から保存用のファイル名を作る (@アカウント名_URLエンコードされた画像URL.拡張子)"""
-    # クエリパラメータから拡張子を取得
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     fmt = query.get("format", ["jpg"])[0]
     ext = f".{fmt}"
 
-    # 念のためファイル名として使えない文字を除外
     safe_username = "".join(c for c in username if c.isalnum() or c in ("_", "-"))
     if not safe_username:
         safe_username = "unknown"
 
-    # URLエンコードされた画像URL
     encoded_url = quote(url, safe="")
 
     return f"@{safe_username}_{encoded_url}{ext}"
@@ -108,55 +177,78 @@ async def get_logged_in_context(playwright):
     return browser, context
 
 
-async def collect_image_urls(page) -> dict:
-    """ブックマークページをスクロールしながら画像情報を収集する"""
-    collected = {}  # url -> {username}
+async def collect_media_urls(page, include_video: bool = False) -> tuple[dict, dict]:
+    """ブックマークページをスクロールしながら画像および動画情報を収集する"""
+    collected_images = {}  # url -> {username}
+    collected_videos = {}  # key -> {username, tweet_url, direct_urls}
     no_new_count = 0
 
     await page.goto(BOOKMARKS_URL)
     await page.wait_for_timeout(3000)
 
     for i in range(MAX_SCROLLS):
-        # ツイート本文内の画像、ユーザー名（@アカウント名）を取得する
         items = await page.eval_on_selector_all(
             "article",
             EXTRACT_TWEETS_JS,
         )
 
-        before_count = len(collected)
+        before_img_count = len(collected_images)
+        before_vid_count = len(collected_videos)
+
         for item in items:
             username = item["username"]
-            urls = item["urls"]
+            image_urls = item.get("imageUrls", [])
+            video_urls = item.get("videoUrls", [])
+            has_video_element = item.get("hasVideoElement", False)
+            tweet_url = item.get("tweetUrl")
 
-            for url in urls:
+            # 画像収集
+            for url in image_urls:
                 orig_url = to_original_quality(url)
-                if orig_url in collected:
-                    continue
-                collected[orig_url] = {
-                    "username": username,
-                }
-        after_count = len(collected)
+                if orig_url not in collected_images:
+                    collected_images[orig_url] = {"username": username}
 
-        print(f"[{i + 1}/{MAX_SCROLLS}] 収集済み画像数: {after_count}")
+            # 動画収集（動画要素が存在するか、直接動画URLがある場合のみ対象）
+            if include_video:
+                has_video = has_video_element or len(video_urls) > 0
+                if has_video:
+                    key = tweet_url if tweet_url else (video_urls[0] if video_urls else None)
+                    if key and key not in collected_videos:
+                        collected_videos[key] = {
+                            "username": username,
+                            "tweet_url": tweet_url,
+                            "direct_urls": video_urls,
+                        }
 
-        no_new_count = 0 if after_count > before_count else no_new_count + 1
+        after_img_count = len(collected_images)
+        after_vid_count = len(collected_videos)
+
+        status_msg = f"[{i + 1}/{MAX_SCROLLS}] 収集済み画像数: {after_img_count}"
+        if include_video:
+            status_msg += f", 動画数: {after_vid_count}"
+        print(status_msg)
+
+        has_new = (after_img_count > before_img_count) or (
+            include_video and after_vid_count > before_vid_count
+        )
+        no_new_count = 0 if has_new else no_new_count + 1
+
         if no_new_count >= NO_NEW_CONTENT_LIMIT:
-            print("新しい画像が見つからなくなったため、収集を終了します。")
+            print("新しいコンテンツが見つからなくなったため、収集を終了します。")
             break
 
         await page.mouse.wheel(0, 3000)
         await page.wait_for_timeout(SCROLL_WAIT_MS)
 
-    return collected
+    return collected_images, collected_videos
 
 
 def download_images(items: dict, save_dir: str, max_workers: int = 10):
     """収集した画像URLをすべてダウンロードして保存する"""
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "Mozilla/5.0"}
-    items_sorted = sorted(items.items(), key=lambda x: x[0])  # URLでソート
+    items_sorted = sorted(items.items(), key=lambda x: x[0])
 
-    # 保存先ディレクトリ内の既存のファイルリストを取得
     existing_files = os.listdir(save_dir)
 
     completed_count = 0
@@ -167,7 +259,6 @@ def download_images(items: dict, save_dir: str, max_workers: int = 10):
         nonlocal completed_count
         username = info["username"]
 
-        # 既に同じ画像URLを持つファイルが保存先に存在するかチェック
         encoded_url = quote(url, safe="")
         existing_filename = next((f for f in existing_files if encoded_url in f), None)
 
@@ -196,24 +287,130 @@ def download_images(items: dict, save_dir: str, max_workers: int = 10):
             with counter_lock:
                 completed_count += 1
                 idx = completed_count
-            print(f"[{idx}/{total}] 保存完了: {filename}")
+            print(f"[{idx}/{total}] 画像保存完了: {filename}")
         except Exception as e:
             with counter_lock:
                 completed_count += 1
                 idx = completed_count
-            print(f"[{idx}/{total}] 失敗: {url} ({e})")
+            print(f"[{idx}/{total}] 画像失敗: {url} ({e})")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for url, info in items_sorted:
             executor.submit(_download_single, url, info)
 
 
+def download_videos(videos: dict, save_dir: str, max_workers: int = 5):
+    """収集した動画情報をダウンロードして保存する（yt-dlpまたは直リンクを使用）"""
+    if not videos:
+        return
+
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    yt_dlp_cmd = shutil.which("yt-dlp")
+    existing_files = os.listdir(save_dir)
+
+    # cookies.txt を書き出し
+    cookies_file = export_cookies_txt(AUTH_FILE, COOKIES_TXT)
+
+    completed_count = 0
+    counter_lock = threading.Lock()
+    total = len(videos)
+
+    def _download_single_video(key, info):
+        nonlocal completed_count
+        username = info["username"]
+        tweet_url = info["tweet_url"]
+        direct_urls = info["direct_urls"]
+
+        safe_username = "".join(c for c in username if c.isalnum() or c in ("_", "-")) or "unknown"
+
+        # 既存ファイルのチェック (ユーザー名を含む動画ファイル)
+        tweet_id = tweet_url.split("/")[-1] if tweet_url else quote(key, safe="")
+        existing_match = next((f for f in existing_files if tweet_id in f), None)
+        if existing_match:
+            with counter_lock:
+                completed_count += 1
+                idx = completed_count
+            print(f"[{idx}/{total}] スキップ（既存動画）: {existing_match}")
+            return
+
+        # 1. yt-dlp コマンドが使用可能な場合
+        if yt_dlp_cmd and tweet_url:
+            output_template = os.path.join(save_dir, f"@{safe_username}_{tweet_id}.%(ext)s")
+            cmd = [
+                yt_dlp_cmd,
+                "-o", output_template,
+                "--no-mtime",
+                "--quiet",
+                "--no-warnings",
+            ]
+            if cookies_file and os.path.exists(cookies_file):
+                cmd.extend(["--cookies", cookies_file])
+            cmd.append(tweet_url)
+
+            try:
+                subprocess.run(cmd, check=True, timeout=120)
+                with counter_lock:
+                    completed_count += 1
+                    idx = completed_count
+                print(f"[{idx}/{total}] 動画保存完了 (yt-dlp): @{safe_username}_{tweet_id}")
+                return
+            except Exception as e:
+                print(f"yt-dlpでのダウンロード失敗 (フォールバック試行): {e}")
+
+        # 2. 直リンクからのフォールバック（または yt-dlp がない場合）
+        if direct_urls:
+            for url in direct_urls:
+                filename = f"@{safe_username}_{quote(url, safe='')}.mp4"
+                filepath = os.path.join(save_dir, filename)
+
+                if os.path.exists(filepath):
+                    with counter_lock:
+                        completed_count += 1
+                        idx = completed_count
+                    print(f"[{idx}/{total}] スキップ（既存動画）: {filename}")
+                    return
+
+                try:
+                    resp = requests.get(url, headers=headers, timeout=60)
+                    resp.raise_for_status()
+                    with open(filepath, "wb") as f:
+                        f.write(resp.content)
+                    with counter_lock:
+                        completed_count += 1
+                        idx = completed_count
+                    print(f"[{idx}/{total}] 動画保存完了: {filename}")
+                    return
+                except Exception as e:
+                    print(f"直リンクからの動画保存失敗: {url} ({e})")
+
+        # ダウンロード方法がない、あるいはすべて失敗した場合
+        with counter_lock:
+            completed_count += 1
+            idx = completed_count
+        if not yt_dlp_cmd:
+            print(
+                f"[{idx}/{total}] 動画スキップ: @{safe_username} (yt-dlp未インストールのため。必要に応じて `pip install yt-dlp` を行ってください)"
+            )
+        else:
+            print(f"[{idx}/{total}] 動画保存失敗: @{safe_username} ({tweet_url or key})")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for key, info in videos.items():
+            executor.submit(_download_single_video, key, info)
+
+
 async def main():
     parser = argparse.ArgumentParser(
-        description="Xのブックマークから画像を一括ダウンロードするスクリプト"
+        description="Xのブックマークから画像・動画を一括ダウンロードするスクリプト"
     )
     parser.add_argument(
-        "--dir", default=SAVE_DIR, help=f"画像の保存先フォルダ (デフォルト: {SAVE_DIR})"
+        "--dir", default=SAVE_DIR, help=f"保存先フォルダ (デフォルト: {SAVE_DIR})"
+    )
+    parser.add_argument(
+        "--video",
+        action="store_true",
+        help="動画もダウンロード対象に含める",
     )
     parser.add_argument(
         "--workers",
@@ -228,12 +425,17 @@ async def main():
         page = await context.new_page()
 
         try:
-            items = await collect_image_urls(page)
+            images, videos = await collect_media_urls(page, include_video=args.video)
         finally:
             await browser.close()
 
-        print(f"\n合計 {len(items)} 件の画像を収集しました。ダウンロードを開始します。")
-        download_images(items, args.dir, args.workers)
+        print(f"\n合計 {len(images)} 件の画像を収集しました。ダウンロードを開始します。")
+        download_images(images, args.dir, args.workers)
+
+        if args.video:
+            print(f"\n合計 {len(videos)} 件の動画を収集しました。ダウンロードを開始します。")
+            download_videos(videos, args.dir, max(1, args.workers // 2))
+
         print(f"\n完了しました！ {args.dir} フォルダを確認してください。")
 
 
