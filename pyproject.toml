@@ -16,6 +16,7 @@ dependencies = [
     "yt-dlp>=2026.7.4",
     "tqdm>=4.66.0",
     "imagehash>=4.3.1",
+    "clip-interrogator>=0.6.0",
 ]
 
 [tool.uv.sources]
