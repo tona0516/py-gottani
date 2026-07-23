@@ -14,5 +14,8 @@ wheels/
 auth.json
 cookies.txt
 
+# cache
+cache/
+
 # Output
 images/

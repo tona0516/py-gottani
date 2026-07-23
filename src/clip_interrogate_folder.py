@@ -48,10 +48,9 @@ def parse_prompt(prompt: str) -> List[str]:
 
 def analyze_folder(
     input_dir: Path,
+    output_file: Path,
     clip_model: str = "ViT-L-14/openai",
     caption_model: str | None = None,
-    top_n: int = 30,
-    output_file: Path | None = None,
     recursive: bool = False,
 ) -> None:
     """指定フォルダ内の画像を処理し、プロンプトの抽出と頻度集計を行う."""
@@ -107,24 +106,23 @@ def analyze_folder(
     print(f"処理完了画像数: {len(results)} / {len(image_paths)}")
     print("=" * 60)
 
-    print(f"\n■ カンマ区切りフレーズ / タグの出現頻度 TOP {top_n}:")
+    print("\n■ カンマ区切りフレーズ / タグの出現頻度:")
     print("-" * 50)
-    for rank, (phrase, count) in enumerate(phrase_counter.most_common(top_n), 1):
+    for rank, (phrase, count) in enumerate(phrase_counter.most_common(), 1):
         print(f"{rank:2d}. {phrase:<40} : {count} 回")
 
     # ファイル出力が指定されている場合
-    if output_file:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        export_data = {
-            "folder": str(input_dir),
-            "total_images": len(results),
-            "clip_model": clip_model,
-            "top_phrases": dict(phrase_counter.most_common(top_n)),
-            "details": results,
-        }
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(export_data, f, ensure_ascii=False, indent=2)
-        print(f"\n詳細結果を JSON ファイルに保存しました: {output_file}")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    export_data = {
+        "folder": str(input_dir),
+        "total_images": len(results),
+        "clip_model": clip_model,
+        "phrases": dict(phrase_counter.most_common()),
+        "details": results,
+    }
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+    print(f"\n詳細結果を JSON ファイルに保存しました: {output_file}")
 
 
 def main() -> None:
@@ -142,12 +140,12 @@ def main() -> None:
         "-o",
         "--output-file",
         type=Path,
-        default=None,
+        required=True,
         help="解析結果（JSON形式）を出力する保存先パス",
     )
     parser.add_argument(
-        "--clip-model",
         "-m",
+        "--clip-model",
         type=str,
         default="ViT-L-14/openai",
         help="使用するCLIPモデル名 (デフォルト: ViT-L-14/openai)",
@@ -159,12 +157,6 @@ def main() -> None:
         help="使用するキャプションモデル名 (例: blip-large, blip-base など)",
     )
     parser.add_argument(
-        "--top-n",
-        type=int,
-        default=30,
-        help="出力する出現頻度上位の件数 (デフォルト: 30)",
-    )
-    parser.add_argument(
         "--recursive",
         "-r",
         action="store_true",
@@ -174,10 +166,9 @@ def main() -> None:
     args = parser.parse_args()
     analyze_folder(
         input_dir=args.input_dir,
+        output_file=args.output_file,
         clip_model=args.clip_model,
         caption_model=args.caption_model,
-        top_n=args.top_n,
-        output_file=args.output_file,
         recursive=args.recursive,
     )
 
