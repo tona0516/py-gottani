@@ -49,8 +49,8 @@ def parse_prompt(prompt: str) -> List[str]:
 def analyze_folder(
     input_dir: Path,
     output_file: Path,
-    clip_model: str = "ViT-L-14/openai",
-    caption_model: str | None = None,
+    clip_model: str,
+    caption_model: str,
     recursive: bool = False,
 ) -> None:
     """指定フォルダ内の画像を処理し、プロンプトの抽出と頻度集計を行う."""
@@ -65,9 +65,11 @@ def analyze_folder(
     print(f"CLIPモデル '{clip_model}' を初期化中...")
 
     # CLIP Interrogator の初期化
-    config_kwargs = {"clip_model_name": clip_model, "device": device}
-    if caption_model:
-        config_kwargs["caption_model_name"] = caption_model
+    config_kwargs = {
+        "clip_model_name": clip_model,
+        "caption_model_name": caption_model,
+        "device": device,
+    }
 
     config = Config(**config_kwargs)
     ci = Interrogator(config)
@@ -153,7 +155,7 @@ def main() -> None:
     parser.add_argument(
         "--caption-model",
         type=str,
-        default=None,
+        default="blip-base",
         help="使用するキャプションモデル名 (例: blip-large, blip-base など)",
     )
     parser.add_argument(
