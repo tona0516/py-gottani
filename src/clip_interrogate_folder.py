@@ -78,7 +78,9 @@ def analyze_folder(
     phrase_counter = Counter()
 
     print("画像を解析中...")
-    for img_path in tqdm(image_paths, desc="Interrogating"):
+    for i, img_path in enumerate(image_paths):
+        print(f"{i+1}/{len(image_paths)}: {img_path}")
+
         try:
             with Image.open(img_path) as img:
                 img_rgb = img.convert("RGB")
