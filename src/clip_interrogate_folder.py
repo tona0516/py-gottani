@@ -13,7 +13,6 @@ from typing import List
 from clip_interrogator import Config, Interrogator
 from PIL import Image
 import torch
-from tqdm import tqdm
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -79,7 +78,7 @@ def analyze_folder(
 
     print("画像を解析中...")
     for i, img_path in enumerate(image_paths):
-        print(f"{i+1}/{len(image_paths)}: {img_path}")
+        print(f"{i + 1}/{len(image_paths)}: {img_path}")
 
         try:
             with Image.open(img_path) as img:
