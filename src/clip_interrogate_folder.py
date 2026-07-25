@@ -97,8 +97,6 @@ def analyze_folder(
         results.append(
             {
                 "image_path": str(img_path),
-                "image_name": img_path.name,
-                "prompt": prompt,
                 "phrases": phrases,
             }
         )
@@ -150,14 +148,14 @@ def main() -> None:
         "-m",
         "--clip-model",
         type=str,
-        default="ViT-L-14/openai",
-        help="使用するCLIPモデル名 (デフォルト: ViT-L-14/openai)",
+        default="ViT-bigG-14/laion2b_s39b_b160k",
+        help="使用するCLIPモデル名 (デフォルト: ViT-bigG-14/laion2b_s39b_b160k)",
     )
     parser.add_argument(
         "--caption-model",
         type=str,
-        default="blip-base",
-        help="使用するキャプションモデル名 (例: blip-large, blip-base など)",
+        default="blip-large",
+        help="使用するキャプションモデル名 (デフォルト: blip-large)",
     )
     parser.add_argument(
         "--recursive",
