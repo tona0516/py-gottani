@@ -1,6 +1,6 @@
 """
-evaluate_images.py
-====================
+09_evaluate_images.py
+  ======================
 StableDiffusion等で大量生成した画像を自動でスクリーニングするスクリプト。
 
 検出する項目:
@@ -22,12 +22,12 @@ StableDiffusion等で大量生成した画像を自動でスクリーニング�
 (無くてもCPUで動作しますが1枚あたり数秒かかることがあります)。
 
 使い方 (uv):
-    uv run evaluate_images.py --input ./images --output result.csv
+    uv run 09_evaluate_images.py --input ./images --output result.csv
 
     # スコアが悪い画像だけ別フォルダにコピーして見やすくする場合
-    uv run evaluate_images.py --input ./images --output result.csv --copy-flagged ./review
+    uv run 09_evaluate_images.py --input ./images --output result.csv --copy-flagged ./review
 
-    # 実行権限を付けていれば ./evaluate_images.py --input ... でも可
+    # 実行権限を付けていれば ./09_evaluate_images.py --input ... でも可
     # (先頭のシバン行が `uv run --script` を呼び出すため)
 
 依存関係はこのファイル先頭の `# /// script` ブロックに記載済みなので、

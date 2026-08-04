@@ -193,16 +193,16 @@ def main() -> None:
         epilog="""
 使用例:
   # 入力フォルダを指定して出力フォルダへ保存（デフォルト）
-  python trim_margin.py -i images/
+  python 06_trim_margin.py -i images/
 
   # 許容差を指定（背景が完全な単色でない場合に有効）
-  python trim_margin.py -i images/ -t 20
+  python 06_trim_margin.py -i images/ -t 20
 
   # トリミング後に余白を追加
-  python trim_margin.py -i images/ -p 10
+  python 06_trim_margin.py -i images/ -p 10
 
   # 元のファイルに上書き保存
-  python trim_margin.py -i images/ --overwrite
+  python 06_trim_margin.py -i images/ --overwrite
         """,
     )
     parser.add_argument(

@@ -150,10 +150,10 @@ def main() -> None:
         epilog="""\
 使用例:
   # 入力フォルダと出力フォルダを指定
-  python move_monochrome.py -i images/ -o monochrome/
+  python 08_move_monochrome.py -i images/ -o monochrome/
 
   # 彩度閾値を調整（値が大きいほどモノクロと判定されやすくなる）
-  python move_monochrome.py -i images/ -o monochrome/ -t 30
+  python 08_move_monochrome.py -i images/ -o monochrome/ -t 30
         """,
     )
     parser.add_argument(
