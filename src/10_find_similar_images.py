@@ -12,8 +12,8 @@
 ハミング距離がしきい値以下の類似画像ペアが存在する場合、どのフォルダ間で見つかったかを
 結果に反映し、コンソールおよびファイルへ出力します。
 
-ロゴや単色などのシンプルな画像（ユニーク色数が少ない、または背景が支配的な画像）は
-dHash の判定が不安定になるため、比較対象から除外します。
+背景が支配的なロゴなどのシンプルな画像は dHash の判定が不安定になるため、
+比較対象から除外します。
 """
 
 import os
@@ -28,14 +28,10 @@ from tqdm import tqdm
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-# シンプル画像判定用のサンプル解像度（このサイズに縮小して色数を数える）
+# シンプル画像判定用のサンプル解像度
 COMPLEXITY_SAMPLE_SIZE = 64
-# 16段階/チャンネルに量子化してユニーク色を数える
-COLOR_QUANTIZE_LEVELS = 16
-# 量子化後のユニーク色数がこの値以下ならシンプル画像とみなす
-SIMPLE_MAX_UNIQUE_COLORS = 8
 # 背景以外のピクセル割合がこの値未満ならロゴ的画像とみなす
-SIMPLE_MIN_CONTENT_RATIO = 0.05
+SIMPLE_MIN_CONTENT_RATIO = 0.10
 
 
 @dataclass
@@ -81,9 +77,8 @@ def is_simple_image(img: Image.Image) -> bool:
     """
     ロゴや単色などのシンプルな画像かどうかを判定する。
 
-    以下のいずれかに該当すればシンプル画像とみなす。
-    1. 縮小画像をチャンネルごとに量子化したユニーク色数が SIMPLE_MAX_UNIQUE_COLORS 以下
-    2. 最頻色（背景色）と異なるピクセルの割合が SIMPLE_MIN_CONTENT_RATIO 未満
+    最頻色（背景色）と異なるピクセルの割合が
+    SIMPLE_MIN_CONTENT_RATIO 未満であればシンプル画像とみなす。
 
     Args:
         img: 判定対象の画像
@@ -94,7 +89,7 @@ def is_simple_image(img: Image.Image) -> bool:
     try:
         img_rgb = convert_palette_to_rgba_if_needed(img).convert("RGB")
 
-        # 縮小して色情報を取り出す（NEAREST補間でフラットな色を維持する）
+        # 縮小して色情報を取り出す
         small = img_rgb.resize(
             (COMPLEXITY_SAMPLE_SIZE, COMPLEXITY_SAMPLE_SIZE),
             Image.Resampling.NEAREST,
@@ -105,21 +100,9 @@ def is_simple_image(img: Image.Image) -> bool:
         if colors is None:
             return False
 
-        # チャンネルごとに量子化してユニーク色数を数える
-        levels = COLOR_QUANTIZE_LEVELS
-        quantized_colors = set()
-        total_pixels = 0
-        for count, (r, g, b) in colors:
-            quantized_colors.add(
-                (r * levels // 256, g * levels // 256, b * levels // 256)
-            )
-            total_pixels += count
+        total_pixels = sum(count for count, _ in colors)
 
-        # 1) 色数が少ない場合はシンプル画像とみなす
-        if len(quantized_colors) <= SIMPLE_MAX_UNIQUE_COLORS:
-            return True
-
-        # 2) 最頻色を背景色とみなし、背景以外のピクセル割合が小さければロゴ的とみなす
+        # 最頻色を背景色とみなし、背景以外のピクセル割合が小さければロゴ的とみなす
         _, bg_color = max(colors, key=lambda item: item[0])
         tolerance = 32
         bg_count = sum(
@@ -390,8 +373,7 @@ def main() -> None:
     print(f"入力フォルダ : {root_dir}")
     print(f"ハミング距離しきい値: {args.threshold}")
     print(
-        f"シンプル画像判定: 色数 {SIMPLE_MAX_UNIQUE_COLORS} 以下 "
-        f"または コンテンツ割合 {SIMPLE_MIN_CONTENT_RATIO} 未満"
+        f"シンプル画像判定: コンテンツ割合 {SIMPLE_MIN_CONTENT_RATIO} 未満"
     )
     print(f"結果出力ファイル: {output_path}")
     print()
