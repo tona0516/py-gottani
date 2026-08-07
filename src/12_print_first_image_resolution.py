@@ -89,7 +89,12 @@ def print_most_common_resolutions(root: Path) -> int:
 
     # 総画素数、幅、高さの順で降順。同じ解像度ではパス順にする。
     resolutions.sort(
-        key=lambda item: (-item[0] * item[1], -item[0], -item[1], str(item[2]).casefold())
+        key=lambda item: (
+            -item[0] * item[1],
+            -item[0],
+            -item[1],
+            str(item[2]).casefold(),
+        )
     )
     for width, height, path in resolutions:
         print(f"{width}x{height}\t{path}")
@@ -103,7 +108,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="指定ディレクトリ配下の各画像フォルダについて、最頻出の解像度と代表パスを表示します。"
     )
-    parser.add_argument("-i", "--input-dir", type=Path, help="再帰的に探索するディレクトリ")
+    parser.add_argument(
+        "-i", "--input-dir", type=Path, help="再帰的に探索するディレクトリ"
+    )
     args = parser.parse_args()
 
     root = args.input_dir

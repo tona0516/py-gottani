@@ -16,7 +16,7 @@ def is_image(path: Path) -> bool:
     try:
         with Image.open(path) as image:
             image.verify()
-    except (UnidentifiedImageError, OSError, ValueError):
+    except UnidentifiedImageError, OSError, ValueError:
         return False
     return True
 

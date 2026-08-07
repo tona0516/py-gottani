@@ -175,8 +175,7 @@ def collect_images_in_parent(root_dir: str, parent_dir: str) -> tuple:
 
     with ThreadPoolExecutor() as executor:
         futures = [
-            executor.submit(process_image_file, path, parent)
-            for path, parent in tasks
+            executor.submit(process_image_file, path, parent) for path, parent in tasks
         ]
         results = [f.result() for f in futures]
 
@@ -372,9 +371,7 @@ def main() -> None:
 
     print(f"入力フォルダ : {root_dir}")
     print(f"ハミング距離しきい値: {args.threshold}")
-    print(
-        f"シンプル画像判定: コンテンツ割合 {SIMPLE_MIN_CONTENT_RATIO} 未満"
-    )
+    print(f"シンプル画像判定: コンテンツ割合 {SIMPLE_MIN_CONTENT_RATIO} 未満")
     print(f"結果出力ファイル: {output_path}")
     print()
 
