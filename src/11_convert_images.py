@@ -26,8 +26,8 @@ def jpeg_destination(path: Path) -> Path:
     return path.with_suffix(".jpg")
 
 
-def convert_png(path: Path) -> None:
-    """PNG を品質 85 の JPEG に変換し、成功時に元の PNG を削除する。"""
+def convert_to_jpeg(path: Path) -> None:
+    """画像を品質 85 の JPEG に変換し、成功時に元のファイルを削除する。"""
     destination = jpeg_destination(path)
     if destination.exists():
         raise FileExistsError(f"出力先が既に存在します: {destination}")
@@ -65,8 +65,8 @@ def process_directory(input_dir: Path) -> None:
 
         extension = path.suffix.lower()
         try:
-            if extension == ".png":
-                convert_png(path)
+            if extension in {".png", ".webp"}:
+                convert_to_jpeg(path)
                 print(f"変換: {path} -> {jpeg_destination(path)}")
             elif extension == ".jpeg":
                 rename_jpeg(path)
@@ -79,7 +79,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "指定ディレクトリ配下の画像を再帰的に処理します。"
-            "PNG は品質 85 の JPG に変換し、JPEG は拡張子を JPG に変更します。"
+            "PNG や WebP は品質 85 の JPG に変換し、JPEG は拡張子を JPG に変更します。"
         )
     )
     parser.add_argument("-i", "--input-dir", type=Path, help="探索対象のディレクトリ")
