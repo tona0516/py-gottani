@@ -807,6 +807,12 @@ def main() -> None:
         help="重複探索を行う秒数（動画1の末尾および動画2の先頭） (デフォルト: 60.0)",
     )
     parser.add_argument(
+        "--min-similarity",
+        type=float,
+        default=0.9,
+        help="重複検出の最小類似度スコア (0.0 〜 1.0)。この値を下回る場合はエラーで停止します (デフォルト: 0.9)",
+    )
+    parser.add_argument(
         "--save-preview",
         default=None,
         help="接続点の一致プレビュー画像（左右比較＋差分）の保存先パス",
@@ -866,13 +872,6 @@ def main() -> None:
     print(f"  一致度類似度: {overlap.similarity * 100:.1f} %")
     print("=" * 60 + "\n")
 
-    if overlap.similarity < 0.3:
-        print(
-            "警告: 一致度スコアが低いため、意図した重複区間ではない可能性があります。\n"
-            "必要に応じて --search-window などのパラメータを調整してください。\n",
-            file=sys.stderr,
-        )
-
     # プレビュー画像保存
     if args.save_preview:
         save_preview_image(
@@ -883,6 +882,16 @@ def main() -> None:
             os.path.abspath(args.save_preview),
             overlap.similarity,
         )
+
+    # 類似度チェック
+    if overlap.similarity < args.min_similarity:
+        print(
+            f"エラー: 検出された類似度（{overlap.similarity * 100:.1f}%）が基準値（{args.min_similarity * 100:.1f}%）未満のため、処理を停止しました。\n"
+            "動画同士の重複が見つからなかったか、一致度が不十分です。\n"
+            "探索範囲（--search-window）を調整するか、--min-similarity で閾値を変更してください。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # レンダリングエンジンの選択と実行
     use_ffmpeg = False
