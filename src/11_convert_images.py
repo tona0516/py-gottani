@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -119,7 +121,7 @@ def rename_image(path: Path, destination: Path) -> None:
 
 def process_file(
     path: Path, output_format: str, quality: int = DEFAULT_QUALITY
-) -> None:
+) -> str | None:
     """単一の画像ファイルを処理する。"""
     dest_ext = TARGET_EXTENSIONS[output_format]
     destination = path.with_suffix(dest_ext)
@@ -128,23 +130,39 @@ def process_file(
 
     # 拡張子が大文字小文字を区別せず一致している場合は変換不要
     if current_ext == dest_ext:
-        return
+        return None
 
     # JPEG 同士 (.jpeg -> .jpg) のリネーム
     if current_ext in {".jpg", ".jpeg"} and dest_ext == ".jpg":
         rename_image(path, destination)
-        print(f"リネーム: {path} -> {destination}")
-    else:
-        before_size, after_size = convert_image(
-            path, destination, output_format, quality=quality
-        )
-        diff = after_size - before_size
-        percent = (diff / before_size * 100) if before_size > 0 else 0.0
-        diff_str = f"{format_size(diff, signed=True)} ({percent:+.1f}%)"
-        print(
-            f"変換: {path} -> {destination} "
-            f"({format_size(before_size)} -> {format_size(after_size)}, {diff_str})"
-        )
+        return f"リネーム: {path} -> {destination}"
+
+    before_size, after_size = convert_image(
+        path, destination, output_format, quality=quality
+    )
+    diff = after_size - before_size
+    percent = (diff / before_size * 100) if before_size > 0 else 0.0
+    diff_str = f"{format_size(diff, signed=True)} ({percent:+.1f}%)"
+    return (
+        f"変換: {path} -> {destination} "
+        f"({format_size(before_size)} -> {format_size(after_size)}, {diff_str})"
+    )
+
+
+def process_single_file(
+    path: Path,
+    output_format: str,
+    quality: int = DEFAULT_QUALITY,
+) -> tuple[bool, str | None]:
+    """1つの画像ファイルを検証・処理し、(成功フラグ, メッセージ) を返す。"""
+    if not is_image(path):
+        return True, None
+
+    try:
+        msg = process_file(path, output_format, quality=quality)
+        return True, msg
+    except (OSError, ValueError) as error:
+        return False, f"エラー: {path}: {error}"
 
 
 def process_directory(
@@ -152,20 +170,41 @@ def process_directory(
     target_input_extensions: set[str],
     output_format: str,
     quality: int = DEFAULT_QUALITY,
+    max_workers: int | None = None,
 ) -> None:
-    """input_dir 配下の画像を再帰的に処理する。"""
-    for path in sorted(input_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in target_input_extensions:
-            continue
-        if not is_image(path):
-            continue
+    """input_dir 配下の画像を並列で再帰的に処理する。"""
+    candidate_paths = [
+        path
+        for path in sorted(input_dir.rglob("*"))
+        if path.is_file() and path.suffix.lower() in target_input_extensions
+    ]
 
-        try:
-            process_file(path, output_format, quality=quality)
-        except (OSError, ValueError) as error:
-            print(f"エラー: {path}: {error}", file=sys.stderr)
+    if not candidate_paths:
+        return
+
+    workers = max_workers or os.cpu_count() or 1
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                process_single_file,
+                path,
+                output_format,
+                quality,
+            ): path
+            for path in candidate_paths
+        }
+
+        for future in as_completed(futures):
+            path = futures[future]
+            try:
+                success, msg = future.result()
+                if msg:
+                    if success:
+                        print(msg)
+                    else:
+                        print(msg, file=sys.stderr)
+            except Exception as error:
+                print(f"エラー: {path}: {error}", file=sys.stderr)
 
 
 def normalize_output_format(value: str) -> str:
@@ -186,6 +225,9 @@ def validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
 
     if not (1 <= args.quality <= 100):
         parser.error(f"--quality は 1〜100 の範囲で指定してください: {args.quality}")
+
+    if args.workers is not None and args.workers <= 0:
+        parser.error(f"--workers は 1 以上の整数を指定してください: {args.workers}")
 
 
 def main() -> None:
@@ -213,6 +255,13 @@ def main() -> None:
         default=DEFAULT_QUALITY,
         help=f"JPEG / WebP 変換時の品質 (1-100, デフォルト: {DEFAULT_QUALITY})",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=None,
+        help="並列処理のワーカー数 (デフォルト: CPUコア数)",
+    )
     args = parser.parse_args()
 
     validate_args(args, parser)
@@ -226,6 +275,7 @@ def main() -> None:
         target_input_extensions=target_input_extensions,
         output_format=output_format,
         quality=args.quality,
+        max_workers=args.workers,
     )
 
 
